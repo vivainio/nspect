@@ -6,7 +6,7 @@
 //! scan is classified as:
 //!
 //! * `resolved_cross_project` — `N` is declared by exactly one other project;
-//!   emitted as `{N: other_project}`.
+//!   grouped by declaring project: `{other_project: [N, ...]}`.
 //! * `ambiguous` — `N` is declared by two or more other projects; emitted
 //!   as `{N: [proj_a, proj_b, ...]}`.
 //! * `external` — `N` is not declared by any project in the load.
@@ -40,9 +40,9 @@ pub struct ReferencesSnapshot {
 pub struct ProjectReferences {
     pub name: String,
     pub path: PathBuf,
-    /// Simple-name → owning project.
+    /// Declaring project → simple names this project uses from it.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub resolved_cross_project: BTreeMap<String, String>,
+    pub resolved_cross_project: BTreeMap<String, Vec<String>>,
     /// Simple-name → list of projects that declare it.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub ambiguous: BTreeMap<String, Vec<String>>,
@@ -118,7 +118,7 @@ fn resolve(
         }
     };
 
-    let mut resolved_cross_project: BTreeMap<String, String> = BTreeMap::new();
+    let mut resolved_cross_project: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut ambiguous: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut external: Vec<String> = Vec::new();
 
@@ -144,7 +144,10 @@ fn resolve(
                     0 => external.push(name.clone()),
                     1 => {
                         let proj = distinct_projects.into_iter().next().unwrap().to_string();
-                        resolved_cross_project.insert(name.clone(), proj);
+                        resolved_cross_project
+                            .entry(proj)
+                            .or_default()
+                            .push(name.clone());
                     }
                     _ => {
                         let mut list: Vec<String> =
@@ -159,6 +162,10 @@ fn resolve(
 
     external.sort();
     external.dedup();
+    for names in resolved_cross_project.values_mut() {
+        names.sort();
+        names.dedup();
+    }
 
     ProjectReferences {
         name: p.name.clone(),
@@ -241,7 +248,10 @@ mod tests {
         );
         let snap = build(&[a, b, c, web], Path::new("/r"));
         let web_r = snap.projects.iter().find(|p| p.name == "Web").unwrap();
-        assert_eq!(web_r.resolved_cross_project.get("Helper"), Some(&"Utils".into()));
+        assert_eq!(
+            web_r.resolved_cross_project.get("Utils").cloned(),
+            Some(vec!["Helper".to_string()])
+        );
         // Customer is declared by both Domain and Shared → ambiguous.
         let amb = web_r.ambiguous.get("Customer").cloned().unwrap();
         assert_eq!(amb, vec!["Domain".to_string(), "Shared".to_string()]);
