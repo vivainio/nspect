@@ -20,7 +20,15 @@ fn projects_are_loaded_from_all_source_trees() {
     let a = build_atlas("atlas");
     let names: Vec<&str> = a.projects.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(a.projects.len(), 7, "got {names:?}");
-    for expected in ["Core", "Utils", "Domain", "Api", "Ui", "Domain.Tests", "Widget"] {
+    for expected in [
+        "Core",
+        "Utils",
+        "Domain",
+        "Api",
+        "Ui",
+        "Domain.Tests",
+        "Widget",
+    ] {
         assert!(names.contains(&expected), "missing {expected} in {names:?}");
     }
 }
@@ -49,7 +57,10 @@ fn legacy_reference_resolves_to_sibling_project() {
     // Atlas must treat that as a project-ref, not an external ref.
     let a = build_atlas("atlas");
     let widget = a.projects.iter().find(|p| p.name == "Widget").unwrap();
-    assert_eq!(widget.fan_out, 1, "Widget should have 1 resolved project ref");
+    assert_eq!(
+        widget.fan_out, 1,
+        "Widget should have 1 resolved project ref"
+    );
     assert_eq!(widget.project_refs, vec!["Core".to_string()]);
     // System stays as an external ref, Core does not appear there.
     let ext_names: Vec<&str> = widget
@@ -98,7 +109,11 @@ fn no_cycles_and_no_orphans_in_clean_fixture() {
     let a = build_atlas("atlas");
     assert!(a.cycles.is_empty(), "unexpected cycles: {:?}", a.cycles);
     assert!(a.orphans.is_empty(), "unexpected orphans: {:?}", a.orphans);
-    assert!(a.unresolved.is_empty(), "unexpected unresolved: {:?}", a.unresolved);
+    assert!(
+        a.unresolved.is_empty(),
+        "unexpected unresolved: {:?}",
+        a.unresolved
+    );
 }
 
 #[test]

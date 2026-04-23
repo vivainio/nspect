@@ -150,7 +150,10 @@ impl ProjectGraph {
             let any_project_edge = self
                 .graph
                 .edges_directed(idx, petgraph::Direction::Incoming)
-                .chain(self.graph.edges_directed(idx, petgraph::Direction::Outgoing))
+                .chain(
+                    self.graph
+                        .edges_directed(idx, petgraph::Direction::Outgoing),
+                )
                 .any(|e| *e.weight() == EdgeKind::ProjectRef);
             if !any_project_edge {
                 out.push(id);
@@ -168,7 +171,9 @@ impl ProjectGraph {
             let id = self.node_key(node);
             let label = self.node_label(node);
             let style = match node {
-                Node::Package(_) => ", shape=ellipse, style=\"filled,rounded\", fillcolor=\"#eeeeee\"",
+                Node::Package(_) => {
+                    ", shape=ellipse, style=\"filled,rounded\", fillcolor=\"#eeeeee\""
+                }
                 _ => "",
             };
             s.push_str(&format!("  \"{id}\" [label=\"{label}\"{style}];\n"));

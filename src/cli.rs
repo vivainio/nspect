@@ -4,12 +4,16 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
-    analysis, atlas, classes, cpm, csproj, discovery, graph::ProjectGraph, metrics,
-    model::Project, report, sln, source_scan,
+    analysis, atlas, classes, cpm, csproj, discovery, graph::ProjectGraph, metrics, model::Project,
+    report, sln, source_scan,
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "nspect", version, about = "Analyze the structure of C# projects and solutions")]
+#[command(
+    name = "nspect",
+    version,
+    about = "Analyze the structure of C# projects and solutions"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -244,8 +248,7 @@ pub fn run_atlas(args: AtlasArgs) -> Result<()> {
             print!("{}", encode_atlas(&atlas_model, args.format, args.compact)?);
         }
         Some(dir) => {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("creating {}", dir.display()))?;
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
             let ext = match args.format {
                 AtlasFormat::Json => "json",
                 AtlasFormat::Yaml => "yaml",
@@ -271,11 +274,7 @@ pub fn run_atlas(args: AtlasArgs) -> Result<()> {
     Ok(())
 }
 
-fn encode_atlas<T: serde::Serialize>(
-    v: &T,
-    format: AtlasFormat,
-    compact: bool,
-) -> Result<String> {
+fn encode_atlas<T: serde::Serialize>(v: &T, format: AtlasFormat, compact: bool) -> Result<String> {
     Ok(match format {
         AtlasFormat::Json if compact => serde_json::to_string(v)?,
         AtlasFormat::Json => serde_json::to_string_pretty(v)?,
@@ -345,7 +344,10 @@ pub fn run_ts_dump(args: TsDumpArgs) -> Result<()> {
     }
 
     if args.sexp {
-        println!("\nS-expression (with leaf text):\n{}", sexp_with_text(root, src.as_bytes(), 0));
+        println!(
+            "\nS-expression (with leaf text):\n{}",
+            sexp_with_text(root, src.as_bytes(), 0)
+        );
     }
 
     Ok(())

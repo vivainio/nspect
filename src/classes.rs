@@ -35,8 +35,7 @@ pub fn build(projects: &[Project], scan_root: &Path) -> ClassesSnapshot {
     let root = scan_root
         .canonicalize()
         .unwrap_or_else(|_| scan_root.to_path_buf());
-    let mut out: Vec<ProjectClasses> =
-        projects.iter().map(|p| regroup(p, &root)).collect();
+    let mut out: Vec<ProjectClasses> = projects.iter().map(|p| regroup(p, &root)).collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     ClassesSnapshot { projects: out }
 }
@@ -106,11 +105,7 @@ mod tests {
     use crate::model::{Project, ProjectId};
     use std::path::PathBuf;
 
-    fn mkproj(
-        name: &str,
-        nss: &[&str],
-        types: &[(TypeKind, &str)],
-    ) -> Project {
+    fn mkproj(name: &str, nss: &[&str], types: &[(TypeKind, &str)]) -> Project {
         let mut declared_types: BTreeMap<TypeKind, Vec<String>> = BTreeMap::new();
         for (k, n) in types {
             declared_types.entry(*k).or_default().push((*n).to_string());

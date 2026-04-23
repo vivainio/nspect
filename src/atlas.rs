@@ -82,7 +82,9 @@ pub fn build(projects: Vec<Project>, scan_root: &Path) -> Atlas {
         .unwrap_or_else(|_| scan_root.to_path_buf());
     let g = ProjectGraph::build(projects);
     let relativize = |p: &Path| -> PathBuf {
-        p.strip_prefix(&root).map(|r| r.to_path_buf()).unwrap_or_else(|_| p.to_path_buf())
+        p.strip_prefix(&root)
+            .map(|r| r.to_path_buf())
+            .unwrap_or_else(|_| p.to_path_buf())
     };
 
     let project_ids: Vec<ProjectId> = g.projects.keys().copied().collect();
@@ -177,7 +179,10 @@ pub fn build(projects: Vec<Project>, scan_root: &Path) -> Atlas {
     // Area records.
     let mut by_area: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in &atlas_projects {
-        by_area.entry(p.area.clone()).or_default().push(p.id.clone());
+        by_area
+            .entry(p.area.clone())
+            .or_default()
+            .push(p.id.clone());
     }
     let areas: Vec<Area> = by_area
         .into_iter()
@@ -347,8 +352,14 @@ fn merge_external_refs(p: &Project) -> Vec<AtlasRef> {
     out.dedup_by(|a, b| match (&*a, &*b) {
         (AtlasRef::Bare(x), AtlasRef::Bare(y)) => x == y,
         (
-            AtlasRef::Versioned { name: an, version: av },
-            AtlasRef::Versioned { name: bn, version: bv },
+            AtlasRef::Versioned {
+                name: an,
+                version: av,
+            },
+            AtlasRef::Versioned {
+                name: bn,
+                version: bv,
+            },
         ) => an == bn && av == bv,
         _ => false,
     });
@@ -381,8 +392,12 @@ fn ref_name(r: &AtlasRef) -> &str {
 ///
 /// Falls back to "unmapped" if the project lives outside the scan root.
 fn derive_area(project_path: &Path, scan_root: &Path) -> (String, PathBuf) {
-    let scan_root = scan_root.canonicalize().unwrap_or_else(|_| scan_root.to_path_buf());
-    let project = project_path.canonicalize().unwrap_or_else(|_| project_path.to_path_buf());
+    let scan_root = scan_root
+        .canonicalize()
+        .unwrap_or_else(|_| scan_root.to_path_buf());
+    let project = project_path
+        .canonicalize()
+        .unwrap_or_else(|_| project_path.to_path_buf());
 
     let rel = match project.strip_prefix(&scan_root) {
         Ok(r) => r.to_path_buf(),
@@ -391,7 +406,11 @@ fn derive_area(project_path: &Path, scan_root: &Path) -> (String, PathBuf) {
 
     let mut segs: Vec<&std::ffi::OsStr> = rel.iter().collect();
     // Drop trailing filename.
-    if segs.last().map(|s| s.to_string_lossy().ends_with(".csproj")).unwrap_or(false) {
+    if segs
+        .last()
+        .map(|s| s.to_string_lossy().ends_with(".csproj"))
+        .unwrap_or(false)
+    {
         segs.pop();
     }
 
@@ -503,7 +522,10 @@ pub fn resolve_project(atlas: &Atlas, query: &str) -> Result<String, ResolveErro
         .map(|p| (p.id.as_str(), p.name.as_str()))
         .collect();
 
-    let exact: Vec<_> = names.iter().filter(|(_, n)| n.to_lowercase() == q).collect();
+    let exact: Vec<_> = names
+        .iter()
+        .filter(|(_, n)| n.to_lowercase() == q)
+        .collect();
     if exact.len() == 1 {
         return Ok(exact[0].0.to_string());
     }
@@ -637,7 +659,10 @@ pub fn focus<'a>(atlas: &'a Atlas, focus_id: &'a str, up: u32, down: u32) -> Foc
         }
     }
 
-    let mut nodes: Vec<&AtlasProject> = kept.iter().filter_map(|id| by_id.get(id).copied()).collect();
+    let mut nodes: Vec<&AtlasProject> = kept
+        .iter()
+        .filter_map(|id| by_id.get(id).copied())
+        .collect();
     nodes.sort_by(|a, b| (a.layer, a.name.as_str()).cmp(&(b.layer, b.name.as_str())));
 
     let edges: Vec<(&str, &str)> = atlas
@@ -672,7 +697,11 @@ impl<'a> Focus<'a> {
             .collect();
         for p in &self.nodes {
             let nid = &short[p.id.as_str()];
-            let marker = if p.id == self.focus_id { ":::focus" } else { "" };
+            let marker = if p.id == self.focus_id {
+                ":::focus"
+            } else {
+                ""
+            };
             let label = format!("{}<br/>L{} · {}", p.name, p.layer, p.area);
             s.push_str(&format!("  {nid}[\"{label}\"]{marker}\n"));
         }
@@ -684,7 +713,8 @@ impl<'a> Focus<'a> {
     }
 
     pub fn to_dot(&self) -> String {
-        let mut s = String::from("digraph focus {\n  rankdir=LR;\n  node [shape=box, style=rounded];\n");
+        let mut s =
+            String::from("digraph focus {\n  rankdir=LR;\n  node [shape=box, style=rounded];\n");
         for p in &self.nodes {
             let extra = if p.id == self.focus_id {
                 ", style=\"filled,rounded\", fillcolor=\"#ffd966\""
@@ -741,7 +771,10 @@ impl<'a> Focus<'a> {
             self.up,
             self.down
         ));
-        s.push_str(&format!("\ndepended on by (depth 1, {} shown):\n", ins.len()));
+        s.push_str(&format!(
+            "\ndepended on by (depth 1, {} shown):\n",
+            ins.len()
+        ));
         for p in &ins {
             s.push_str(&format!("  ← {} [{} L{}]\n", p.name, p.area, p.layer));
         }
@@ -805,7 +838,9 @@ mod tests {
         std::fs::write(&csproj, b"<Project/>").unwrap();
         let (area, root) = derive_area(&csproj, &scan_root);
         assert_eq!(area, "InvoiceAutomation");
-        assert!(root.ends_with("Src/InvoiceAutomation") || root.ends_with("Src\\InvoiceAutomation"));
+        assert!(
+            root.ends_with("Src/InvoiceAutomation") || root.ends_with("Src\\InvoiceAutomation")
+        );
     }
 
     fn tempdir_new() -> PathBuf {

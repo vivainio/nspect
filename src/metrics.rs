@@ -37,8 +37,7 @@ pub fn build(projects: &[Project], scan_root: &Path) -> MetricsSnapshot {
     let root = scan_root
         .canonicalize()
         .unwrap_or_else(|_| scan_root.to_path_buf());
-    let mut out: Vec<ProjectMetrics> =
-        projects.iter().map(|p| per_project(p, &root)).collect();
+    let mut out: Vec<ProjectMetrics> = projects.iter().map(|p| per_project(p, &root)).collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     MetricsSnapshot { projects: out }
 }
@@ -74,7 +73,10 @@ fn per_project(p: &Project, root: &Path) -> ProjectMetrics {
     for (fqn, metrics) in &p.type_metrics {
         // A type without a registered kind means we have metrics but no
         // declaration entry — treat as class. Shouldn't happen in practice.
-        let kind = kind_of.get(fqn.as_str()).copied().unwrap_or(TypeKind::Class);
+        let kind = kind_of
+            .get(fqn.as_str())
+            .copied()
+            .unwrap_or(TypeKind::Class);
         let (ns, local) = split_namespace(fqn, &namespaces_by_len);
         grouped
             .entry(ns)

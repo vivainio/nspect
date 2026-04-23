@@ -68,10 +68,7 @@ pub fn parse_str(xml: &str) -> Result<HashMap<String, String>> {
             Err(e) => return Err(anyhow::anyhow!("xml error: {e}")),
             Ok(Event::Eof) => break,
             Ok(Event::Start(e) | Event::Empty(e)) => {
-                if e.name()
-                    .as_ref()
-                    .eq_ignore_ascii_case(b"PackageVersion")
-                {
+                if e.name().as_ref().eq_ignore_ascii_case(b"PackageVersion") {
                     collect(e.attributes());
                 }
             }

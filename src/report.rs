@@ -15,7 +15,13 @@ pub fn scan_text(projects: &[Project]) -> String {
 
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
-    table.set_header(vec!["Project", "SDK", "TargetFramework(s)", "Pkgs", "ProjRefs"]);
+    table.set_header(vec![
+        "Project",
+        "SDK",
+        "TargetFramework(s)",
+        "Pkgs",
+        "ProjRefs",
+    ]);
     for p in projects {
         table.add_row(vec![
             Cell::new(&p.name),
@@ -97,7 +103,10 @@ pub fn graph_text(g: &ProjectGraph) -> String {
     }
 
     if !g.unresolved.is_empty() {
-        out.push_str(&format!("\n{}\n", "Unresolved project refs:".yellow().bold()));
+        out.push_str(&format!(
+            "\n{}\n",
+            "Unresolved project refs:".yellow().bold()
+        ));
         for u in &g.unresolved {
             out.push_str(&format!(
                 "  - {} → {}\n",

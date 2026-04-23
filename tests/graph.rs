@@ -17,9 +17,8 @@ fn multi_graph_has_edge() {
     assert_eq!(g.graph.edge_count(), 1);
     assert!(g.package_nodes.is_empty());
 
-    let g_with = ProjectGraph::build_with_packages(
-        nspect::cli::load_projects(&fixture("multi")).unwrap(),
-    );
+    let g_with =
+        ProjectGraph::build_with_packages(nspect::cli::load_projects(&fixture("multi")).unwrap());
     assert_eq!(g_with.package_nodes.len(), 2);
     assert_eq!(g_with.graph.edge_count(), 3);
 

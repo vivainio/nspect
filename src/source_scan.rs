@@ -149,8 +149,8 @@ fn is_build_output(path: &Path) -> bool {
 }
 
 fn extract_decls_file(path: &Path) -> Result<FileDecls> {
-    let src = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let src =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     extract_decls(&src)
 }
 
@@ -171,7 +171,13 @@ pub fn extract_decls(src: &str) -> Result<FileDecls> {
     let mut cursor = tree.walk();
     let mut ns_stack: Vec<String> = Vec::new();
     let mut ty_stack: Vec<String> = Vec::new();
-    visit(&mut cursor, src.as_bytes(), &mut ns_stack, &mut ty_stack, &mut out);
+    visit(
+        &mut cursor,
+        src.as_bytes(),
+        &mut ns_stack,
+        &mut ty_stack,
+        &mut out,
+    );
     Ok(out)
 }
 
@@ -443,9 +449,7 @@ namespace Foo {
     }
 
     fn has(d: &FileDecls, kind: TypeKind, name: &str) -> bool {
-        d.types
-            .iter()
-            .any(|(k, n)| *k == kind && n == name)
+        d.types.iter().any(|(k, n)| *k == kind && n == name)
     }
 
     #[test]

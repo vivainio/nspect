@@ -88,10 +88,7 @@ fn classes_snapshot_groups_by_namespace() {
 
     let snap = nspect::classes::build(&projects, &root);
     let app = snap.projects.iter().find(|p| p.name == "App").unwrap();
-    let ns = app
-        .namespaces
-        .get("App")
-        .expect("App namespace bucket");
+    let ns = app.namespaces.get("App").expect("App namespace bucket");
     let classes = ns.get(&TypeKind::Class).expect("class bucket");
     // The prefix is stripped, leaving just the local name.
     assert!(classes.contains(&"Program".to_string()));

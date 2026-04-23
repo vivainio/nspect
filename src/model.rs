@@ -82,10 +82,7 @@ impl ProjectId {
     pub fn from_path(path: &std::path::Path) -> Self {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        let canonical = path
-            .to_string_lossy()
-            .to_lowercase()
-            .replace('\\', "/");
+        let canonical = path.to_string_lossy().to_lowercase().replace('\\', "/");
         let mut h = DefaultHasher::new();
         canonical.hash(&mut h);
         ProjectId(h.finish())

@@ -15,7 +15,10 @@ pub struct SlnProject {
 pub fn parse(sln_path: &Path) -> Result<Vec<SlnProject>> {
     let text = std::fs::read_to_string(sln_path)
         .with_context(|| format!("reading {}", sln_path.display()))?;
-    Ok(parse_str(&text, sln_path.parent().unwrap_or_else(|| Path::new("."))))
+    Ok(parse_str(
+        &text,
+        sln_path.parent().unwrap_or_else(|| Path::new(".")),
+    ))
 }
 
 pub fn parse_str(text: &str, base: &Path) -> Vec<SlnProject> {
