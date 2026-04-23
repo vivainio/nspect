@@ -94,14 +94,16 @@ fn layers_follow_dependency_depth() {
 }
 
 #[test]
-fn composition_roots_exclude_tests() {
+fn composition_roots_exclude_tests_and_low_fan_out() {
     let a = build_atlas("atlas");
-    // Api, Ui, Widget have fan_in=0 and fan_out>0 → composition roots.
-    // Domain.Tests also has fan_in=0 and fan_out>0 but name ends with .Tests → excluded.
+    // Api and Ui each have fan_in=0 and fan_out>=3 → composition roots.
+    // Domain.Tests has fan_in=0 and fan_out>=3 but name ends with .Tests → excluded.
+    // Widget has fan_in=0 and fan_out=1 → below threshold → excluded.
     let mut roots = a.composition_roots.clone();
     roots.sort();
-    assert_eq!(roots, vec!["Api", "Ui", "Widget"]);
+    assert_eq!(roots, vec!["Api", "Ui"]);
     assert!(!roots.contains(&"Domain.Tests".to_string()));
+    assert!(!roots.contains(&"Widget".to_string()));
 }
 
 #[test]
@@ -121,12 +123,15 @@ fn fan_in_and_fan_out_counts_are_correct() {
     let a = build_atlas("atlas");
     let by_name: std::collections::HashMap<&str, &atlas::AtlasProject> =
         a.projects.iter().map(|p| (p.name.as_str(), p)).collect();
-    // Core has two dependents: Utils and Widget.
-    assert_eq!(by_name["Core"].fan_in, 2);
+    // Core has four dependents: Utils, Widget, Api, Ui.
+    assert_eq!(by_name["Core"].fan_in, 4);
     assert_eq!(by_name["Core"].fan_out, 0);
     // Domain has three dependents: Api, Ui, Domain.Tests.
     assert_eq!(by_name["Domain"].fan_in, 3);
     assert_eq!(by_name["Domain"].fan_out, 1);
+    // Api has three project refs (Domain, Utils, Core).
+    assert_eq!(by_name["Api"].fan_out, 3);
+    assert_eq!(by_name["Api"].fan_in, 0);
 }
 
 #[test]

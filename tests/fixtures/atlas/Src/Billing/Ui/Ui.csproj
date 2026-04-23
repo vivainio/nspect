@@ -4,5 +4,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Domain\Domain.csproj" />
+    <ProjectReference Include="..\..\Common\Utils\Utils.csproj" />
+    <ProjectReference Include="..\..\Common\Core\Core.csproj" />
   </ItemGroup>
 </Project>
