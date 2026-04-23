@@ -412,25 +412,30 @@ pub fn run_atlas(mut args: AtlasArgs) -> Result<()> {
 
             write_artifact(
                 &dir.join(format!("atlas.{ext}")),
+                artifact_header("atlas", args.format),
                 &encode_atlas(&atlas_model, args.format, args.compact)?,
             )?;
             write_artifact(
                 &dir.join(format!("classes.{ext}")),
+                artifact_header("classes", args.format),
                 &encode_atlas(&classes_snapshot, args.format, args.compact)?,
             )?;
             write_artifact(
                 &dir.join(format!("metrics.{ext}")),
+                artifact_header("metrics", args.format),
                 &encode_atlas(&metrics_snapshot, args.format, args.compact)?,
             )?;
             if args.check {
                 write_artifact(
                     &dir.join(format!("checks.{ext}")),
+                    artifact_header("checks", args.format),
                     &encode_atlas(&atlas_model.findings, args.format, args.compact)?,
                 )?;
             }
             if let Some(refs) = &references_snapshot {
                 write_artifact(
                     &dir.join(format!("references.{ext}")),
+                    artifact_header("references", args.format),
                     &encode_atlas(refs, args.format, args.compact)?,
                 )?;
             }
@@ -447,10 +452,106 @@ fn encode_atlas<T: serde::Serialize>(v: &T, format: AtlasFormat, compact: bool) 
     })
 }
 
-fn write_artifact(path: &std::path::Path, body: &str) -> Result<()> {
-    std::fs::write(path, body).with_context(|| format!("writing {}", path.display()))?;
+fn write_artifact(path: &std::path::Path, header: &str, body: &str) -> Result<()> {
+    let out = if header.is_empty() {
+        body.to_string()
+    } else {
+        format!("{header}{body}")
+    };
+    std::fs::write(path, &out).with_context(|| format!("writing {}", path.display()))?;
     eprintln!("wrote {}", path.display());
     Ok(())
+}
+
+/// Returns the leading YAML comment that documents an artifact's structure.
+/// Empty for non-YAML formats (JSON has no comment syntax).
+fn artifact_header(kind: &str, format: AtlasFormat) -> &'static str {
+    if !matches!(format, AtlasFormat::Yaml) {
+        return "";
+    }
+    match kind {
+        "atlas" => {
+            "\
+# atlas.yaml — structural snapshot of this codebase.
+#
+# Top-level keys:
+#   root                 repo root (absolute).
+#   composition_roots    entry-point projects (depended on by none).
+#   areas                top-level project groupings (first-path-segment).
+#   projects             one entry per csproj; includes id, path, area,
+#                        target_frameworks, project_refs (ids), external
+#                        refs, fan_in/out, layer (depth in ref DAG),
+#                        in_cycle, and `weight` (aggregate type metrics).
+#   cycles               lists of project ids forming cycles.
+#   orphans              projects with neither dependents nor dependencies.
+#   unresolved           project_refs that point to missing csprojs.
+#   findings             populated only with --check.
+#
+# For AI queries prefer `nspect lookup` over grepping this file.
+"
+        }
+        "classes" => {
+            "\
+# classes.yaml — types declared per project, grouped by namespace/kind.
+#
+# Shape: projects[].namespaces[<ns>][<kind>] = [local_name, ...].
+# `kind` is one of: class, interface, struct, record, record_struct,
+# enum, delegate. `<global>` is the fallback namespace key.
+# Nested types appear with their dotted local path (e.g. Outer.Inner).
+#
+# No metrics or line numbers here — see metrics.yaml for those.
+"
+        }
+        "metrics" => {
+            "\
+# metrics.yaml — per-type and per-method structural metrics with source
+# spans. Output of the tree-sitter source scan.
+#
+# Per project:
+#   totals          aggregate types/loc/members/complexity.
+#   source_files    mapping of `parent_dir -> [basename, ...]`. Flat index
+#                   order is (sorted dir, then sorted basename); that index
+#                   is what `f<id>` below refers to.
+#   namespaces      <ns> -> <kind> -> <local_name> -> TypeMetrics.
+#
+# Compact string encodings (parse them back via `nspect lookup`):
+#   spans:    f<file_id>:<line_start>-<line_end>           (one per partial)
+#   methods:  <name> L<line_start>-<line_end> loc=<N> cx=<N> [f=<id>]
+#             Trailing `f=<id>` only appears on methods of partial classes
+#             whose file differs from the type's primary (first) span.
+#
+# `bases:` is the simple names from the type's base list (class + ifaces).
+"
+        }
+        "checks" => {
+            "\
+# checks.yaml — findings from `atlas --check`.
+#
+# Each entry is a Finding variant: cycles, orphans, unresolved project
+# refs, unused/undeclared package references, and package version
+# conflicts across the solution. Shape mirrors the Rust enum with a
+# `kind` tag; payload fields vary per variant.
+"
+        }
+        "references" => {
+            "\
+# references.yaml — cross-project type references.
+#
+# For each project, the simple type names seen in type-position syntax
+# are classified:
+#   resolved_cross_project  {declaring_project: [name, ...]}
+#                           Exactly one other project declares the name
+#                           and it's visible via `using`/own namespaces.
+#   ambiguous               {name: [project, ...]}
+#                           Two or more projects declare the name.
+#   external                [name, ...]
+#                           Not declared by any project in the load.
+#
+# Per-class detail isn't emitted — the scan works at project granularity.
+"
+        }
+        _ => "",
+    }
 }
 
 #[derive(Debug, Parser)]
