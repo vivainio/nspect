@@ -36,6 +36,8 @@ pub fn parse(path: &Path) -> Result<Project> {
         project_refs,
         assembly_refs: raw.assembly_refs,
         usings: Vec::new(),
+        declared_namespaces: Vec::new(),
+        declared_types: std::collections::BTreeMap::new(),
     })
 }
 

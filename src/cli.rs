@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
-    analysis, atlas, cpm, csproj, discovery, graph::ProjectGraph, model::Project, report, sln,
-    source_scan,
+    analysis, atlas, classes, cpm, csproj, discovery, graph::ProjectGraph, model::Project, report,
+    sln, source_scan,
 };
 
 #[derive(Debug, Parser)]
@@ -82,22 +82,68 @@ pub enum AtlasFormat {
 pub struct AtlasArgs {
     /// Repository root, a `.sln`, or a `.csproj` file.
     pub path: PathBuf,
-    #[arg(long, value_enum, default_value_t = AtlasFormat::Json)]
+    #[arg(long, value_enum, default_value_t = AtlasFormat::Yaml)]
     pub format: AtlasFormat,
     /// Emit compact single-line JSON (has no effect on YAML output).
     #[arg(long)]
     pub compact: bool,
+    /// Write multiple artifacts into this directory instead of printing to
+    /// stdout. Currently produces `atlas.<ext>` and `classes.<ext>`.
+    #[arg(long)]
+    pub output_dir: Option<PathBuf>,
 }
 
 pub fn run_atlas(args: AtlasArgs) -> Result<()> {
-    let projects = load_projects(&args.path)?;
-    let atlas = atlas::build(projects, &args.path);
-    let out = match args.format {
-        AtlasFormat::Json if args.compact => serde_json::to_string(&atlas)?,
-        AtlasFormat::Json => serde_json::to_string_pretty(&atlas)?,
-        AtlasFormat::Yaml => serde_yaml::to_string(&atlas)?,
-    };
-    print!("{out}");
+    let mut projects = load_projects(&args.path)?;
+
+    // Only run the tree-sitter pass when its output will be written.
+    if args.output_dir.is_some() {
+        apply_source_scan(&mut projects)?;
+    }
+
+    match &args.output_dir {
+        None => {
+            let atlas_model = atlas::build(projects, &args.path);
+            print!("{}", encode_atlas(&atlas_model, args.format, args.compact)?);
+        }
+        Some(dir) => {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("creating {}", dir.display()))?;
+            let ext = match args.format {
+                AtlasFormat::Json => "json",
+                AtlasFormat::Yaml => "yaml",
+            };
+            let classes_snapshot = classes::build(&projects, &args.path);
+            let atlas_model = atlas::build(projects, &args.path);
+
+            write_artifact(
+                &dir.join(format!("atlas.{ext}")),
+                &encode_atlas(&atlas_model, args.format, args.compact)?,
+            )?;
+            write_artifact(
+                &dir.join(format!("classes.{ext}")),
+                &encode_atlas(&classes_snapshot, args.format, args.compact)?,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn encode_atlas<T: serde::Serialize>(
+    v: &T,
+    format: AtlasFormat,
+    compact: bool,
+) -> Result<String> {
+    Ok(match format {
+        AtlasFormat::Json if compact => serde_json::to_string(v)?,
+        AtlasFormat::Json => serde_json::to_string_pretty(v)?,
+        AtlasFormat::Yaml => serde_yaml::to_string(v)?,
+    })
+}
+
+fn write_artifact(path: &std::path::Path, body: &str) -> Result<()> {
+    std::fs::write(path, body).with_context(|| format!("writing {}", path.display()))?;
+    eprintln!("wrote {}", path.display());
     Ok(())
 }
 
@@ -340,10 +386,17 @@ pub struct ScanArgs {
     pub path: PathBuf,
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     pub format: OutputFormat,
+    /// Run tree-sitter pass over `.cs` sources to populate `usings`,
+    /// `declared_namespaces`, and `declared_types` on each project.
+    #[arg(long)]
+    pub source_scan: bool,
 }
 
 pub fn run_scan(args: ScanArgs) -> Result<()> {
-    let projects = load_projects(&args.path)?;
+    let mut projects = load_projects(&args.path)?;
+    if args.source_scan {
+        apply_source_scan(&mut projects)?;
+    }
     let out = match args.format {
         OutputFormat::Text => report::scan_text(&projects),
         OutputFormat::Json => report::scan_json(&projects)?,
@@ -457,6 +510,8 @@ pub fn apply_source_scan(projects: &mut [Project]) -> Result<()> {
     let scans = source_scan::scan_projects(projects)?;
     for (p, s) in projects.iter_mut().zip(scans) {
         p.usings = s.usings;
+        p.declared_namespaces = s.declared_namespaces;
+        p.declared_types = s.declared_types;
     }
     Ok(())
 }

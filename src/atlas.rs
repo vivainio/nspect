@@ -187,14 +187,17 @@ pub fn build(projects: Vec<Project>, scan_root: &Path) -> Atlas {
 
     let orphans_out: Vec<String> = g.orphans().into_iter().map(id_str).collect();
 
-    // Composition roots: nothing depends on them (fan_in == 0) but they
-    // depend on something (fan_out > 0). Orphans (fan_in == 0 AND fan_out == 0)
-    // are excluded — they get their own list. Test projects are filtered out;
-    // they're technically entry points but not what "composition root"
-    // conventionally means.
+    // Composition roots: nothing depends on them (fan_in == 0) but they pull
+    // in a real stack (fan_out >= 3). The threshold filters out unreferenced
+    // leaf libraries — Interface/Contracts/Model projects that nothing
+    // consumes — which match the zero-fan-in pattern but aren't entry points.
+    // Tests and installers are also filtered by name.
+    const COMPOSITION_ROOT_MIN_FAN_OUT: usize = 3;
     let mut composition_roots: Vec<String> = atlas_projects
         .iter()
-        .filter(|p| p.fan_in == 0 && p.fan_out > 0 && !looks_like_test(&p.name))
+        .filter(|p| {
+            p.fan_in == 0 && p.fan_out >= COMPOSITION_ROOT_MIN_FAN_OUT && !looks_like_test(&p.name)
+        })
         .map(|p| p.id.clone())
         .collect();
     composition_roots.sort();
@@ -340,13 +343,17 @@ fn merge_external_refs(p: &Project) -> Vec<AtlasRef> {
     out
 }
 
-/// True if the project name looks like a test project — any dotted segment
-/// ends with `test`, `tests`, or `testing` (case-insensitive).
-/// Matches `.Tests`, `.Testing`, `.IntegrationTesting`, `.UnitTests`, etc.
+/// True if the project name looks like a test or installer project — a
+/// dotted segment ends with `test`, `tests`, `testing`, or `installer`
+/// (case-insensitive). Matches `.Tests`, `.IntegrationTesting`,
+/// `.ServiceInstaller`, `.NServiceBus.Installer`, etc.
 fn looks_like_test(name: &str) -> bool {
     name.split('.').any(|seg| {
         let lower = seg.to_ascii_lowercase();
-        lower.ends_with("test") || lower.ends_with("tests") || lower.ends_with("testing")
+        lower.ends_with("test")
+            || lower.ends_with("tests")
+            || lower.ends_with("testing")
+            || lower.ends_with("installer")
     })
 }
 
@@ -751,6 +758,8 @@ mod tests {
             project_refs: refs.iter().map(PathBuf::from).collect(),
             assembly_refs: Vec::new(),
             usings: Vec::new(),
+            declared_namespaces: Vec::new(),
+            declared_types: std::collections::BTreeMap::new(),
         }
     }
 

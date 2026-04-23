@@ -1,6 +1,20 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Serialize;
+
+/// Kinds of type declarations tracked by the tree-sitter source scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TypeKind {
+    Class,
+    Interface,
+    Struct,
+    Record,
+    RecordStruct,
+    Enum,
+    Delegate,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct ProjectId(pub u64);
@@ -17,6 +31,13 @@ pub struct Project {
     pub assembly_refs: Vec<String>,
     #[serde(default)]
     pub usings: Vec<String>,
+    /// Namespaces declared in this project's `.cs` sources. Deduped, sorted.
+    #[serde(default)]
+    pub declared_namespaces: Vec<String>,
+    /// Fully-qualified type names declared in this project's `.cs` sources,
+    /// bucketed by kind. Per-bucket lists are deduped and sorted.
+    #[serde(default)]
+    pub declared_types: BTreeMap<TypeKind, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod atlas;
+pub mod classes;
 pub mod cli;
 pub mod cpm;
 pub mod csproj;

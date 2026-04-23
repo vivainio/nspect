@@ -308,6 +308,8 @@ mod tests {
             project_refs: refs.iter().map(PathBuf::from).collect(),
             assembly_refs: Vec::new(),
             usings: Vec::new(),
+            declared_namespaces: Vec::new(),
+            declared_types: std::collections::BTreeMap::new(),
         }
     }
 
