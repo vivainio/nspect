@@ -125,7 +125,11 @@ namespace N {
         // ctor on 4, Foo's span starts at its `[Obsolete]` attribute on 5,
         // Bar on 9. Signatures have attributes stripped.
         assert!(on(4).contains("C(int x)"), "{:?}", on(4));
-        assert!(on(5).contains("Foo(string name, bool strict)"), "{:?}", on(5));
+        assert!(
+            on(5).contains("Foo(string name, bool strict)"),
+            "{:?}",
+            on(5)
+        );
         assert!(!on(5).contains("Obsolete"));
         assert!(on(9).contains("Bar()"), "{:?}", on(9));
         std::fs::remove_dir_all(&dir).ok();

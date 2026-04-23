@@ -125,12 +125,7 @@ fn per_project(p: &Project, root: &Path) -> ProjectMetrics {
         name: p.name.clone(),
         path: relativize(&p.path, root),
         totals: project_totals(p),
-        source_files: GroupedFiles(
-            p.source_files
-                .iter()
-                .map(|f| relativize(f, root))
-                .collect(),
-        ),
+        source_files: GroupedFiles(p.source_files.iter().map(|f| relativize(f, root)).collect()),
         namespaces: grouped,
     }
 }

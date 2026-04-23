@@ -66,8 +66,10 @@ pub fn build(projects: &[Project], scan_root: &Path) -> ReferencesSnapshot {
 
     let catalog = build_catalog(projects);
 
-    let mut out: Vec<ProjectReferences> =
-        projects.iter().map(|p| resolve(p, &catalog, &root)).collect();
+    let mut out: Vec<ProjectReferences> = projects
+        .iter()
+        .map(|p| resolve(p, &catalog, &root))
+        .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     ReferencesSnapshot { projects: out }
 }
@@ -78,10 +80,12 @@ fn build_catalog(projects: &[Project]) -> BTreeMap<String, Vec<CatalogEntry>> {
         for names in p.declared_types.values() {
             for fqn in names {
                 let (ns, simple) = split_fqn(fqn);
-                out.entry(simple.to_string()).or_default().push(CatalogEntry {
-                    project: p.name.clone(),
-                    namespace: ns.to_string(),
-                });
+                out.entry(simple.to_string())
+                    .or_default()
+                    .push(CatalogEntry {
+                        project: p.name.clone(),
+                        namespace: ns.to_string(),
+                    });
             }
         }
     }
@@ -100,8 +104,7 @@ fn resolve(
     catalog: &BTreeMap<String, Vec<CatalogEntry>>,
     root: &Path,
 ) -> ProjectReferences {
-    let own_namespaces: BTreeSet<&str> =
-        p.declared_namespaces.iter().map(String::as_str).collect();
+    let own_namespaces: BTreeSet<&str> = p.declared_namespaces.iter().map(String::as_str).collect();
     let usings: BTreeSet<&str> = p.usings.iter().map(String::as_str).collect();
 
     // A referenced namespace is "visible" if the project imports it via
@@ -127,10 +130,8 @@ fn resolve(
             None => external.push(name.clone()),
             Some(entries) => {
                 // Keep only entries whose declaring namespace is visible to `p`.
-                let visible_entries: Vec<&CatalogEntry> = entries
-                    .iter()
-                    .filter(|e| visible(&e.namespace))
-                    .collect();
+                let visible_entries: Vec<&CatalogEntry> =
+                    entries.iter().filter(|e| visible(&e.namespace)).collect();
                 // Drop internal hits (same project). If any remaining hit is
                 // internal, the reference is "internal" — skip per caller
                 // request (we don't emit internal references).

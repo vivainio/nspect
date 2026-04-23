@@ -241,11 +241,7 @@ pub fn build(projects: Vec<Project>, scan_root: &Path, opts: AtlasOptions) -> At
         })
         .collect();
 
-    let findings = if opts.check {
-        analyze(&g)
-    } else {
-        Vec::new()
-    };
+    let findings = if opts.check { analyze(&g) } else { Vec::new() };
 
     Atlas {
         root,

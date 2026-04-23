@@ -208,7 +208,10 @@ pub fn run_with(
     if let Some(refs) = &references_doc {
         for project in projects_of(refs) {
             let caller = string_at(project, "name").unwrap_or_default();
-            if let Some(xp) = project.get("resolved_cross_project").and_then(Value::as_mapping) {
+            if let Some(xp) = project
+                .get("resolved_cross_project")
+                .and_then(Value::as_mapping)
+            {
                 for (declaring, names) in xp {
                     let declaring = declaring.as_str().unwrap_or("");
                     let Some(list) = names.as_sequence() else {
@@ -302,12 +305,15 @@ pub fn run_with(
 pub fn run_file(atlas_dir: &Path, query: &Path) -> Result<FileResult> {
     let metrics_doc = load_optional(atlas_dir, "metrics.yaml")?;
     let classes_doc = load_optional(atlas_dir, "classes.yaml")?;
-    let decls = metrics_doc.as_ref().or(classes_doc.as_ref()).ok_or_else(|| {
-        anyhow::anyhow!(
-            "atlas dir {} contains neither metrics.yaml nor classes.yaml",
-            atlas_dir.display()
-        )
-    })?;
+    let decls = metrics_doc
+        .as_ref()
+        .or(classes_doc.as_ref())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "atlas dir {} contains neither metrics.yaml nor classes.yaml",
+                atlas_dir.display()
+            )
+        })?;
 
     let needle = query.to_string_lossy().replace('\\', "/");
     let mut matches: Vec<FileMatch> = Vec::new();
@@ -400,11 +406,7 @@ struct MethodInfo {
     cx: u64,
 }
 
-fn populate_from_metrics(
-    m: &mut Match,
-    body: &Value,
-    files: &[PathBuf],
-) -> Vec<MethodInfo> {
+fn populate_from_metrics(m: &mut Match, body: &Value, files: &[PathBuf]) -> Vec<MethodInfo> {
     m.loc = body.get("loc").and_then(Value::as_u64);
     m.members = body.get("members").and_then(Value::as_u64);
     m.complexity = body.get("complexity").and_then(Value::as_u64);
@@ -417,8 +419,7 @@ fn populate_from_metrics(
     let spans = parse_spans(body);
     let primary_file_id = spans.first().map(|s| s.file_id);
     for sp in &spans {
-        m.at
-            .push(format_at(files, sp.file_id, sp.line_start, sp.line_end));
+        m.at.push(format_at(files, sp.file_id, sp.line_start, sp.line_end));
     }
     let mut out = Vec::new();
     if let Some(methods) = body.get("methods").and_then(Value::as_sequence) {
@@ -718,10 +719,7 @@ mod tests {
         assert_eq!(r.matches.len(), 2);
         let by_proj: std::collections::HashMap<_, _> =
             r.matches.iter().map(|m| (m.project.clone(), m)).collect();
-        assert!(by_proj["Domain"]
-            .referenced_by
-            .iter()
-            .any(|c| c == "App"));
+        assert!(by_proj["Domain"].referenced_by.iter().any(|c| c == "App"));
         assert!(by_proj["Web"].referenced_by.is_empty());
         assert_eq!(r.ambiguous_in, vec!["Reporting".to_string()]);
 
@@ -776,7 +774,10 @@ mod tests {
         let fr = run_file(&dir, Path::new("Customer.cs")).unwrap();
         assert_eq!(fr.matches.len(), 1);
         assert_eq!(fr.matches[0].file, PathBuf::from("src/Domain/Customer.cs"));
-        assert_eq!(fr.matches[0].types, vec!["Acme.Domain.Customer L10-80".to_string()]);
+        assert_eq!(
+            fr.matches[0].types,
+            vec!["Acme.Domain.Customer L10-80".to_string()]
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

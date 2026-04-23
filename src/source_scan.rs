@@ -105,8 +105,7 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
         cs_paths.sort_by(|a, b| {
             let pa = a.parent().unwrap_or_else(|| Path::new(""));
             let pb = b.parent().unwrap_or_else(|| Path::new(""));
-            pa.cmp(pb)
-                .then_with(|| a.file_name().cmp(&b.file_name()))
+            pa.cmp(pb).then_with(|| a.file_name().cmp(&b.file_name()))
         });
 
         for path in &cs_paths {
