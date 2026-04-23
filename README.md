@@ -44,9 +44,31 @@ nspect graph ./my-repo --format text
 
 Package nodes are **off by default** — on large monoliths they drown out the project structure. Add `--packages` to include them.
 
-### `nspect check <path>`
+### `nspect atlas <path>`
 
-Run every finding and exit non-zero if any error-level finding is produced. Integrates cleanly with CI.
+Emit a structural snapshot of the repo as YAML (default) or JSON: areas, projects with fan-in/fan-out/layer, and internal vs. external references.
+
+```bash
+nspect atlas ./my-repo                       # YAML to stdout
+nspect atlas ./my-repo --format json         # JSON
+nspect atlas ./my-repo --check               # embed findings (see below) under `findings:`
+nspect atlas ./my-repo --output-dir ./out    # writes multiple artifacts (see below)
+```
+
+With `--output-dir`, the tree-sitter source scan runs and these artifacts are written side by side:
+
+| File | Contents |
+|---|---|
+| `atlas.yaml` | Project graph (areas, fan-in/fan-out, layers, refs). Each project also gains a `weight:` block with aggregate `types`, `loc`, `members`, `complexity`. |
+| `classes.yaml` | Declared types per project, grouped by namespace and bucketed by kind (`class`, `interface`, `struct`, `record`, `record_struct`, `enum`, `delegate`). Nested types keep a dotted local path (e.g. `Outer.Inner`). |
+| `metrics.yaml` | Same shape as `classes.yaml` but values are `{loc, members, complexity, methods}` per type, plus a per-project `totals:` block. |
+| `checks.yaml` | Only written with `--check`. The `findings` list (see below) as a standalone artifact. |
+
+Without `--output-dir`, only the atlas itself is emitted (to stdout) and no source scan is performed — unless `--check` forces it to run the package-ref heuristics.
+
+#### `--check` findings
+
+When `--check` is on, `atlas.yaml` gains a `findings:` array (and with `--output-dir`, a sibling `checks.yaml`). CI gates can grep for error-severity kinds.
 
 | Finding | Severity | What it means |
 |---|---|---|
@@ -56,31 +78,6 @@ Run every finding and exit non-zero if any error-level finding is produced. Inte
 | `unused_package_ref` | warning | A `<PackageReference>` whose namespaces never appear in any `using` of the project. Skips test runners, analyzers, and runtime shims by default. |
 | `undeclared_usage` | warning | A `using X.Y.Z;` that doesn't match any declared package or project ref. Advisory only — noisy on legacy codebases that rely on transitive DLL discovery. |
 | `orphan_project` | info | A project with no incoming or outgoing project refs. |
-
-Flags:
-
-- `--json` — structured output instead of a text report
-- `--no-source-scan` — skip the tree-sitter pass (disables `unused_package_ref` + `undeclared_usage`, ~100× faster on big monorepos)
-
-### `nspect atlas <path>`
-
-Emit a structural snapshot of the repo as YAML (default) or JSON: areas, projects with fan-in/fan-out/layer, and internal vs. external references.
-
-```bash
-nspect atlas ./my-repo                       # YAML to stdout
-nspect atlas ./my-repo --format json         # JSON
-nspect atlas ./my-repo --output-dir ./out    # writes three files (see below)
-```
-
-With `--output-dir`, the tree-sitter source scan runs and three artifacts are written side by side:
-
-| File | Contents |
-|---|---|
-| `atlas.yaml` | Project graph (areas, fan-in/fan-out, layers, refs). Each project also gains a `weight:` block with aggregate `types`, `loc`, `members`, `complexity`. |
-| `classes.yaml` | Declared types per project, grouped by namespace and bucketed by kind (`class`, `interface`, `struct`, `record`, `record_struct`, `enum`, `delegate`). Nested types keep a dotted local path (e.g. `Outer.Inner`). |
-| `metrics.yaml` | Same shape as `classes.yaml` but values are `{loc, members, complexity, methods}` per type, plus a per-project `totals:` block. |
-
-Without `--output-dir`, only the atlas itself is emitted (to stdout) and no source scan is performed.
 
 ### `nspect metrics <path>`
 
@@ -140,7 +137,7 @@ Useful for writing new heuristics against the CST.
 
 - **MSBuild property evaluation.** `$(Foo)` references are recorded as-is; nothing is expanded. Attempting to evaluate MSBuild correctly is a rabbit hole.
 - **`Directory.Build.props/targets`.** Presence is not currently merged into project metadata. Flagged for a future milestone.
-- **Transitive DLL discovery via HintPath.** Legacy .NET Framework monoliths rely on `packages/*/lib/*.dll` being found through a chain of HintPaths. `undeclared_usage` does not trace these, which is why it's noisy on legacy codebases.
+- **Transitive DLL discovery via HintPath.** Legacy .NET Framework monoliths rely on `packages/*/lib/*.dll` being found through a chain of HintPaths. The `undeclared_usage` finding does not trace these, which is why it's noisy on legacy codebases.
 - **Type resolution.** The source scan is textual. `using Foo.Bar;` produces the string `"Foo.Bar"`; whether that's a namespace or a static type is not determined.
 - **NuGet restore.** `nspect` analyzes what's *declared*, not what would *resolve*.
 
@@ -152,8 +149,9 @@ On a ~790-csproj monolith:
 |---|---|
 | `nspect scan` (parse all csprojs + CPM) | ~0.3 s |
 | `nspect graph` | ~0.3 s |
-| `nspect check --no-source-scan` | ~0.3 s |
-| `nspect check` (full, tree-sitter across ~all .cs files) | ~28 s |
+| `nspect atlas` | ~0.3 s |
+| `nspect atlas --check` (tree-sitter across ~all .cs files) | ~28 s |
+| `nspect atlas --output-dir ...` (full source scan + per-type metrics) | ~28 s |
 
 ## License
 

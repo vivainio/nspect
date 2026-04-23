@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
-    analysis, atlas, classes, cpm, csproj, discovery, graph::ProjectGraph, metrics, model::Project,
-    report, sln, source_scan,
+    atlas, classes, cpm, csproj, discovery, graph::ProjectGraph, metrics, model::Project, report,
+    sln, source_scan,
 };
 
 #[derive(Debug, Parser)]
@@ -25,8 +25,6 @@ pub enum Command {
     Scan(ScanArgs),
     /// Build a project-to-project dependency graph and emit DOT / Mermaid / JSON.
     Graph(GraphArgs),
-    /// Run all findings (cycles, orphans, unresolved refs, version conflicts). Exits non-zero if any error finding is produced.
-    Check(CheckArgs),
     /// Dump the tree-sitter C# parse of a single `.cs` file (S-expression + extracted `using`s).
     TsDump(TsDumpArgs),
     /// Emit a structural snapshot (areas, projects, edges, layers) as JSON.
@@ -55,7 +53,7 @@ pub struct FocusArgs {
 
 pub fn run_focus(args: FocusArgs) -> Result<()> {
     let projects = load_projects(&args.path)?;
-    let atlas_model = atlas::build(projects, &args.path);
+    let atlas_model = atlas::build(projects, &args.path, atlas::AtlasOptions::default());
     let focus_id = match atlas::resolve_project(&atlas_model, &args.project) {
         Ok(id) => id,
         Err(e) => {
@@ -94,9 +92,15 @@ pub struct AtlasArgs {
     #[arg(long)]
     pub compact: bool,
     /// Write multiple artifacts into this directory instead of printing to
-    /// stdout. Currently produces `atlas.<ext>` and `classes.<ext>`.
+    /// stdout. Produces `atlas.<ext>`, `classes.<ext>`, `metrics.<ext>`, and
+    /// (with `--check`) `checks.<ext>`.
     #[arg(long)]
     pub output_dir: Option<PathBuf>,
+    /// Run findings (cycles, orphans, unresolved refs, version conflicts,
+    /// unused/undeclared packages) and embed them under `findings` in
+    /// `atlas.<ext>`. With `--output-dir`, also writes `checks.<ext>`.
+    #[arg(long)]
+    pub check: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -236,15 +240,17 @@ fn print_top_methods(projects: &[Project], filter: &Option<String>, top: usize) 
 
 pub fn run_atlas(args: AtlasArgs) -> Result<()> {
     let mut projects = load_projects(&args.path)?;
+    let opts = atlas::AtlasOptions { check: args.check };
 
-    // Only run the tree-sitter pass when its output will be written.
-    if args.output_dir.is_some() {
+    // Tree-sitter source pass is needed for the classes/metrics artifacts
+    // (output-dir case) and for the package-ref findings inside `--check`.
+    if args.output_dir.is_some() || args.check {
         apply_source_scan(&mut projects)?;
     }
 
     match &args.output_dir {
         None => {
-            let atlas_model = atlas::build(projects, &args.path);
+            let atlas_model = atlas::build(projects, &args.path, opts);
             print!("{}", encode_atlas(&atlas_model, args.format, args.compact)?);
         }
         Some(dir) => {
@@ -255,7 +261,7 @@ pub fn run_atlas(args: AtlasArgs) -> Result<()> {
             };
             let classes_snapshot = classes::build(&projects, &args.path);
             let metrics_snapshot = metrics::build(&projects, &args.path);
-            let atlas_model = atlas::build(projects, &args.path);
+            let atlas_model = atlas::build(projects, &args.path, opts);
 
             write_artifact(
                 &dir.join(format!("atlas.{ext}")),
@@ -269,6 +275,12 @@ pub fn run_atlas(args: AtlasArgs) -> Result<()> {
                 &dir.join(format!("metrics.{ext}")),
                 &encode_atlas(&metrics_snapshot, args.format, args.compact)?,
             )?;
+            if args.check {
+                write_artifact(
+                    &dir.join(format!("checks.{ext}")),
+                    &encode_atlas(&atlas_model.findings, args.format, args.compact)?,
+                )?;
+            }
         }
     }
     Ok(())
@@ -448,39 +460,6 @@ fn pretty_sexp(s: &str) -> String {
         }
     }
     out
-}
-
-#[derive(Debug, Parser)]
-pub struct CheckArgs {
-    pub path: PathBuf,
-    #[arg(long)]
-    pub json: bool,
-    /// Skip tree-sitter pass over `.cs` sources (disables unused/undeclared checks).
-    #[arg(long)]
-    pub no_source_scan: bool,
-}
-
-pub fn run_check(args: CheckArgs) -> Result<()> {
-    let mut projects = load_projects(&args.path)?;
-    if !args.no_source_scan {
-        apply_source_scan(&mut projects)?;
-    }
-    let g = ProjectGraph::build(projects);
-    let findings = analysis::analyze(&g);
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&findings)?);
-    } else {
-        println!("{}", report::findings_text(&findings));
-    }
-
-    let any_error = findings
-        .iter()
-        .any(|f| f.severity() == analysis::Severity::Error);
-    if any_error {
-        std::process::exit(1);
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

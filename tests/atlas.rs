@@ -12,7 +12,7 @@ fn fixture(name: &str) -> PathBuf {
 fn build_atlas(name: &str) -> atlas::Atlas {
     let root = fixture(name);
     let projects = nspect::cli::load_projects(&root).expect("load");
-    atlas::build(projects, &root)
+    atlas::build(projects, &root, atlas::AtlasOptions::default())
 }
 
 #[test]

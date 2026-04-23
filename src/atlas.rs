@@ -10,8 +10,17 @@ use std::path::{Path, PathBuf};
 use petgraph::visit::EdgeRef;
 use serde::Serialize;
 
+use crate::analysis::{analyze, Finding};
 use crate::graph::{EdgeKind, Node, ProjectGraph, UnresolvedRef};
 use crate::model::{Project, ProjectId};
+
+/// Knobs that expand what `build` includes in the returned atlas.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AtlasOptions {
+    /// Include findings from `analysis::analyze` (cycles, version conflicts,
+    /// unused/undeclared package refs, orphans).
+    pub check: bool,
+}
 
 #[derive(Debug, Serialize)]
 pub struct Atlas {
@@ -24,6 +33,10 @@ pub struct Atlas {
     pub cycles: Vec<Vec<String>>,
     pub orphans: Vec<String>,
     pub unresolved: Vec<UnresolvedEntry>,
+    /// Populated when `AtlasOptions::check` is set. Empty otherwise and omitted
+    /// from the serialized output.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub findings: Vec<Finding>,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,7 +89,7 @@ pub struct UnresolvedEntry {
     pub target: PathBuf,
 }
 
-pub fn build(projects: Vec<Project>, scan_root: &Path) -> Atlas {
+pub fn build(projects: Vec<Project>, scan_root: &Path, opts: AtlasOptions) -> Atlas {
     let root = scan_root
         .canonicalize()
         .unwrap_or_else(|_| scan_root.to_path_buf());
@@ -228,6 +241,12 @@ pub fn build(projects: Vec<Project>, scan_root: &Path) -> Atlas {
         })
         .collect();
 
+    let findings = if opts.check {
+        analyze(&g)
+    } else {
+        Vec::new()
+    };
+
     Atlas {
         root,
         composition_roots,
@@ -236,6 +255,7 @@ pub fn build(projects: Vec<Project>, scan_root: &Path) -> Atlas {
         cycles: cycles_out,
         orphans: orphans_out,
         unresolved,
+        findings,
     }
 }
 
@@ -859,6 +879,7 @@ mod tests {
         let atlas = build(
             g.projects.values().cloned().collect(),
             std::path::Path::new("/r"),
+            AtlasOptions::default(),
         );
         let by_name: HashMap<_, _> = atlas.projects.iter().map(|p| (p.name.clone(), p)).collect();
         assert_eq!(by_name["A"].fan_out, 2);
