@@ -95,6 +95,12 @@ fn parse_str(xml: &str) -> Result<RawCsproj> {
                         }
                     }
                 }
+                // Also capture refs declared as non-self-closing elements:
+                //   <Reference Include="Foo">...child nodes...</Reference>
+                // Legacy .NET Framework csprojs emit these a lot.
+                let parent = path.last().cloned().unwrap_or_default();
+                let attrs: Vec<_> = e.attributes().flatten().collect();
+                handle_item(&mut raw, &parent, &name, &attrs);
                 path.push(name);
                 text_buf.clear();
             }
