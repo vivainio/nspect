@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
-    atlas, classes, cpm, csproj, discovery, graph::ProjectGraph, metrics, model::Project, report,
-    sln, source_scan,
+    atlas, classes, cpm, csproj, discovery, graph::ProjectGraph, metrics, model::Project,
+    references, report, sln, source_scan,
 };
 
 #[derive(Debug, Parser)]
@@ -101,6 +101,12 @@ pub struct AtlasArgs {
     /// `atlas.<ext>`. With `--output-dir`, also writes `checks.<ext>`.
     #[arg(long)]
     pub check: bool,
+    /// Resolve each project's type-position tokens against the cross-project
+    /// declarations catalog. With `--output-dir`, writes `references.<ext>`.
+    /// Requires the tree-sitter source scan and so implies `--classes`
+    /// (already produced in `--output-dir` mode).
+    #[arg(long)]
+    pub references: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -243,15 +249,21 @@ pub fn run_atlas(args: AtlasArgs) -> Result<()> {
     let opts = atlas::AtlasOptions { check: args.check };
 
     // Tree-sitter source pass is needed for the classes/metrics artifacts
-    // (output-dir case) and for the package-ref findings inside `--check`.
-    if args.output_dir.is_some() || args.check {
+    // (output-dir case), for the package-ref findings inside `--check`, and
+    // for the references resolution.
+    if args.output_dir.is_some() || args.check || args.references {
         apply_source_scan(&mut projects)?;
     }
 
     match &args.output_dir {
         None => {
-            let atlas_model = atlas::build(projects, &args.path, opts);
-            print!("{}", encode_atlas(&atlas_model, args.format, args.compact)?);
+            if args.references {
+                let refs = references::build(&projects, &args.path);
+                print!("{}", encode_atlas(&refs, args.format, args.compact)?);
+            } else {
+                let atlas_model = atlas::build(projects, &args.path, opts);
+                print!("{}", encode_atlas(&atlas_model, args.format, args.compact)?);
+            }
         }
         Some(dir) => {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -261,6 +273,11 @@ pub fn run_atlas(args: AtlasArgs) -> Result<()> {
             };
             let classes_snapshot = classes::build(&projects, &args.path);
             let metrics_snapshot = metrics::build(&projects, &args.path);
+            let references_snapshot = if args.references {
+                Some(references::build(&projects, &args.path))
+            } else {
+                None
+            };
             let atlas_model = atlas::build(projects, &args.path, opts);
 
             write_artifact(
@@ -279,6 +296,12 @@ pub fn run_atlas(args: AtlasArgs) -> Result<()> {
                 write_artifact(
                     &dir.join(format!("checks.{ext}")),
                     &encode_atlas(&atlas_model.findings, args.format, args.compact)?,
+                )?;
+            }
+            if let Some(refs) = &references_snapshot {
+                write_artifact(
+                    &dir.join(format!("references.{ext}")),
+                    &encode_atlas(refs, args.format, args.compact)?,
                 )?;
             }
         }
@@ -636,6 +659,7 @@ pub fn apply_source_scan(projects: &mut [Project]) -> Result<()> {
         p.declared_namespaces = s.declared_namespaces;
         p.declared_types = s.declared_types;
         p.type_metrics = s.type_metrics;
+        p.referenced_types = s.referenced_types;
     }
     Ok(())
 }

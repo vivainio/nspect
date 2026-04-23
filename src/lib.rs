@@ -8,6 +8,7 @@ pub mod discovery;
 pub mod graph;
 pub mod metrics;
 pub mod model;
+pub mod references;
 pub mod report;
 pub mod sln;
 pub mod source_scan;

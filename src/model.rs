@@ -69,6 +69,12 @@ pub struct Project {
     /// when the source scan ran.
     #[serde(default)]
     pub type_metrics: BTreeMap<String, TypeMetrics>,
+    /// Simple type names referenced in type-position syntax across this
+    /// project's `.cs` sources (base lists, fields, parameters, object
+    /// creations, casts, attributes). Deduped, sorted. Predefined types
+    /// (`int`, `string`, …) are excluded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub referenced_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

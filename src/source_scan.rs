@@ -27,6 +27,8 @@ pub struct SourceScan {
     pub declared_types: BTreeMap<TypeKind, Vec<String>>,
     /// Per-type metrics keyed by fully-qualified type name.
     pub type_metrics: BTreeMap<String, TypeMetrics>,
+    /// Simple type names referenced in type-position syntax. Deduped, sorted.
+    pub referenced_types: Vec<String>,
 }
 
 /// Per-file extraction output.
@@ -36,6 +38,8 @@ pub struct FileDecls {
     pub namespaces: Vec<String>,
     pub types: Vec<(TypeKind, String)>,
     pub metrics: Vec<(String, TypeMetrics)>,
+    /// Simple type names observed in type-position contexts.
+    pub references: Vec<String>,
 }
 
 /// Scan `.cs` files under each project. Files inside a nested project's
@@ -61,6 +65,7 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
         let mut namespaces = BTreeSet::new();
         let mut types: BTreeMap<TypeKind, BTreeSet<String>> = BTreeMap::new();
         let mut metrics: BTreeMap<String, TypeMetrics> = BTreeMap::new();
+        let mut references: BTreeSet<String> = BTreeSet::new();
 
         let walker = WalkBuilder::new(project_dir)
             .follow_links(false)
@@ -99,6 +104,9 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
                     for (kind, name) in found.types {
                         types.entry(kind).or_default().insert(name);
                     }
+                    for r in found.references {
+                        references.insert(r);
+                    }
                     for (name, m) in found.metrics {
                         // Partial classes declared across multiple files: sum.
                         let slot = metrics.entry(name).or_default();
@@ -123,6 +131,7 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
             .map(|(k, set)| (k, set.into_iter().collect()))
             .collect();
         scan.type_metrics = metrics;
+        scan.referenced_types = references.into_iter().collect();
         let total_types: usize = scan.declared_types.values().map(Vec::len).sum();
         tracing::debug!(
             "{}: {} sources, {} usings, {} ns, {} types",
@@ -306,6 +315,67 @@ fn count_branches_siblings(cursor: &mut TreeCursor<'_>, out: &mut u32) {
     }
 }
 
+/// Recursively extract simple type names from a type-position node. Unwraps
+/// nullable/array/pointer wrappers, descends into generic arguments and tuple
+/// elements. `predefined_type` (int, string, …) and bare punctuation are
+/// skipped.
+fn collect_type_names(node: tree_sitter::Node<'_>, src: &[u8], out: &mut Vec<String>) {
+    match node.kind() {
+        "identifier" => {
+            if let Ok(text) = node.utf8_text(src) {
+                out.push(text.to_string());
+            }
+        }
+        "qualified_name" => {
+            // Take the rightmost `name` — the actual type identifier.
+            if let Some(name) = node.child_by_field_name("name") {
+                collect_type_names(name, src, out);
+            } else if let Ok(text) = node.utf8_text(src) {
+                if let Some(last) = text.rsplit('.').next() {
+                    out.push(last.to_string());
+                }
+            }
+        }
+        "generic_name" => {
+            if let Some(name) = node.child_by_field_name("name") {
+                if let Ok(text) = name.utf8_text(src) {
+                    out.push(text.to_string());
+                }
+            }
+            // Descend into the type argument list.
+            let mut c = node.walk();
+            for child in node.named_children(&mut c) {
+                if child.kind() == "type_argument_list" {
+                    let mut cc = child.walk();
+                    for arg in child.named_children(&mut cc) {
+                        collect_type_names(arg, src, out);
+                    }
+                }
+            }
+        }
+        "nullable_type" | "array_type" | "pointer_type" => {
+            // The wrapped type is either the `type` field or the first named child.
+            if let Some(inner) = node.child_by_field_name("type") {
+                collect_type_names(inner, src, out);
+            } else {
+                let mut c = node.walk();
+                let first = node.named_children(&mut c).next();
+                if let Some(inner) = first {
+                    collect_type_names(inner, src, out);
+                }
+            }
+        }
+        "tuple_type" | "tuple_element" => {
+            let mut c = node.walk();
+            for child in node.named_children(&mut c) {
+                collect_type_names(child, src, out);
+            }
+        }
+        "predefined_type" | "implicit_type" | "ref_type" => {}
+        _ => {}
+    }
+}
+
 fn type_kind_for(node_kind: &str) -> Option<TypeKind> {
     match node_kind {
         "class_declaration" => Some(TypeKind::Class),
@@ -380,6 +450,44 @@ fn visit(
                 }
             }
             other => {
+                // Type-position extraction — record referenced simple names
+                // from constructs that carry a `type` / return-type child.
+                // Delegate declarations also declare a type (handled below),
+                // so these branches don't early-return.
+                if matches!(
+                    other,
+                    "object_creation_expression"
+                        | "variable_declaration"
+                        | "parameter"
+                        | "typeof_expression"
+                        | "cast_expression"
+                        | "as_expression"
+                        | "is_expression"
+                        | "property_declaration"
+                        | "indexer_declaration"
+                        | "method_declaration"
+                        | "delegate_declaration"
+                        | "conversion_operator_declaration"
+                        | "operator_declaration"
+                ) {
+                    if let Some(t) = node
+                        .child_by_field_name("type")
+                        .or_else(|| node.child_by_field_name("returns"))
+                        .or_else(|| node.child_by_field_name("return_type"))
+                    {
+                        collect_type_names(t, src, &mut out.references);
+                    }
+                } else if other == "base_list" {
+                    let mut bc = node.walk();
+                    for child in node.named_children(&mut bc) {
+                        collect_type_names(child, src, &mut out.references);
+                    }
+                } else if other == "attribute" {
+                    if let Some(name) = node.child_by_field_name("name") {
+                        collect_type_names(name, src, &mut out.references);
+                    }
+                }
+
                 if let Some(type_kind) = type_kind_for(other) {
                     if let Some(name) = node
                         .child_by_field_name("name")
