@@ -20,5 +20,6 @@ fn main() -> Result<()> {
         Command::Metrics(args) => nspect::cli::run_metrics(args),
         Command::Focus(args) => nspect::cli::run_focus(args),
         Command::Lookup(args) => nspect::cli::run_lookup(args),
+        Command::Init(args) => nspect::cli::run_init(args),
     }
 }

@@ -4,9 +4,37 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::model::{Project, TypeKind, TypeMetrics};
+
+/// Serializes a flat list of repo-root-relative paths as a YAML mapping of
+/// `parent_dir -> [basename, ...]`. The in-memory `Vec<PathBuf>` keeps its
+/// flat index — spans reference files by that index — but the on-disk form
+/// is much easier for humans to skim.
+#[derive(Debug, Default)]
+pub struct GroupedFiles(pub Vec<PathBuf>);
+
+impl Serialize for GroupedFiles {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for p in &self.0 {
+            let dir = p
+                .parent()
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            grouped
+                .entry(if dir.is_empty() { ".".to_string() } else { dir })
+                .or_default()
+                .push(name);
+        }
+        grouped.serialize(s)
+    }
+}
 
 const GLOBAL_NS: &str = "<global>";
 
@@ -20,6 +48,13 @@ pub struct ProjectMetrics {
     pub name: String,
     pub path: PathBuf,
     pub totals: ProjectTotals,
+    /// `.cs` source files scanned, repo-root-relative. Serialized as a
+    /// mapping of `parent_dir -> [basename, ...]`. Flat index order (which
+    /// the `f<id>` spans reference) is preserved as long as the mapping is
+    /// iterated in sorted-by-dir order, because scan sorts paths by
+    /// `(parent, basename)` before assigning ids.
+    #[serde(skip_serializing_if = "grouped_is_empty")]
+    pub source_files: GroupedFiles,
     /// Namespace -> kind -> local-name -> metrics.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub namespaces: BTreeMap<String, BTreeMap<TypeKind, BTreeMap<String, TypeMetrics>>>,
@@ -90,8 +125,18 @@ fn per_project(p: &Project, root: &Path) -> ProjectMetrics {
         name: p.name.clone(),
         path: relativize(&p.path, root),
         totals: project_totals(p),
+        source_files: GroupedFiles(
+            p.source_files
+                .iter()
+                .map(|f| relativize(f, root))
+                .collect(),
+        ),
         namespaces: grouped,
     }
+}
+
+fn grouped_is_empty(g: &GroupedFiles) -> bool {
+    g.0.is_empty()
 }
 
 fn relativize(path: &Path, root: &Path) -> PathBuf {

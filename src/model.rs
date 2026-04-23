@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 /// Cheap structural metrics computed per type during the tree-sitter scan.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct TypeMetrics {
-    /// Source lines spanned by the type declaration (inclusive).
+    /// Source lines spanned by the type declaration (inclusive). For partial
+    /// types this is the sum across all partial fragments.
     pub loc: u32,
     /// Direct body members — methods, properties, fields, ctors, events, etc.
     /// Nested types are not counted as members.
@@ -15,6 +16,11 @@ pub struct TypeMetrics {
     /// `for`, `foreach`, `do`, `case`, `catch`, ternary, and `when` clauses.
     /// Branches inside nested types count toward their enclosing type too.
     pub complexity: u32,
+    /// Source spans where this type is declared. Length > 1 means a partial
+    /// type split across files. The first entry is the "primary" span;
+    /// methods default to it unless they carry their own `file_id`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<SourceSpan>,
     /// Per-method breakdown — only direct method/ctor/op members of this
     /// type's body, not members of nested types. Empty for enums/delegates
     /// and types with no method-shaped members.
@@ -27,12 +33,57 @@ pub struct TypeMetrics {
     pub bases: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+/// One declaration fragment of a type. `file_id` indexes the owning project's
+/// `source_files` table. Lines are 1-based, inclusive.
+///
+/// Serialized as a compact single-line string — `"f{file_id}:{start}-{end}"`
+/// — to keep metrics.yaml dense. `lookup` parses it back.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SourceSpan {
+    pub file_id: u32,
+    pub line_start: u32,
+    pub line_end: u32,
+}
+
+impl Serialize for SourceSpan {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(&format_args!(
+            "f{}:{}-{}",
+            self.file_id, self.line_start, self.line_end
+        ))
+    }
+}
+
+/// Serialized as `"<name> L{start}-{end} loc={loc} cx={cx}"`, with an extra
+/// ` f={file_id}` suffix only for partial-class methods whose file differs
+/// from the type's primary span.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MethodMetric {
     /// Method, ctor, dtor, or operator name. Overloads share a name.
     pub name: String,
+    pub line_start: u32,
+    pub line_end: u32,
     pub loc: u32,
     pub complexity: u32,
+    /// Only set on methods of partial types where the method lives in a file
+    /// other than the type's primary span. Non-partial types leave this
+    /// `None`; the method inherits the file from `spans[0]`.
+    pub file_id: Option<u32>,
+}
+
+impl Serialize for MethodMetric {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.file_id {
+            Some(f) => s.collect_str(&format_args!(
+                "{} L{}-{} loc={} cx={} f={}",
+                self.name, self.line_start, self.line_end, self.loc, self.complexity, f
+            )),
+            None => s.collect_str(&format_args!(
+                "{} L{}-{} loc={} cx={}",
+                self.name, self.line_start, self.line_end, self.loc, self.complexity
+            )),
+        }
+    }
 }
 
 /// Kinds of type declarations tracked by the tree-sitter source scan.
@@ -80,6 +131,10 @@ pub struct Project {
     /// (`int`, `string`, …) are excluded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub referenced_types: Vec<String>,
+    /// `.cs` source files scanned for this project, in index order. Spans in
+    /// `type_metrics` reference these by position.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_files: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]

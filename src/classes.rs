@@ -124,6 +124,7 @@ mod tests {
             declared_types,
             type_metrics: BTreeMap::new(),
             referenced_types: Vec::new(),
+            source_files: Vec::new(),
         }
     }
 

@@ -73,6 +73,9 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
             .hidden(false)
             .build();
 
+        // Collect .cs paths first, then sort — ensures deterministic file_id
+        // assignment across runs without retroactively breaking the mapping.
+        let mut cs_paths: Vec<PathBuf> = Vec::new();
         for entry in walker.flatten() {
             let path = entry.path();
             if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
@@ -92,8 +95,25 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
             if is_build_output(path) {
                 continue;
             }
+            cs_paths.push(path.to_path_buf());
+        }
+        // Sort by (parent_dir, basename) so file_ids assigned below match
+        // the order produced when metrics.yaml groups source_files by parent
+        // directory. A plain full-path sort would place `Foo/Bar/x.cs`
+        // *between* `Foo/a.cs` and `Foo/c.cs`, which breaks alignment with
+        // the grouped view.
+        cs_paths.sort_by(|a, b| {
+            let pa = a.parent().unwrap_or_else(|| Path::new(""));
+            let pb = b.parent().unwrap_or_else(|| Path::new(""));
+            pa.cmp(pb)
+                .then_with(|| a.file_name().cmp(&b.file_name()))
+        });
 
-            match extract_decls_file(path) {
+        for path in &cs_paths {
+            // Reserve the file_id *before* parsing so spans stamped during
+            // this file's extraction match its eventual index in source_files.
+            let file_id = scan.source_files.len() as u32;
+            match extract_decls_file(path, file_id) {
                 Ok(found) => {
                     for u in found.usings {
                         usings.insert(u);
@@ -113,6 +133,7 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
                         slot.loc = slot.loc.saturating_add(m.loc);
                         slot.members = slot.members.saturating_add(m.members);
                         slot.complexity = slot.complexity.saturating_add(m.complexity);
+                        slot.spans.extend(m.spans);
                         slot.methods.extend(m.methods);
                         // Partial-class base lists may appear on any of the
                         // partial fragments; merge uniquely preserving order.
@@ -130,7 +151,20 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
             }
         }
 
-        scan.source_files.sort();
+        // Non-partial types inherit their methods' file from `spans[0]`, so
+        // drop the per-method `file_id` in that case to keep metrics.yaml
+        // terse. Partials keep it on every method.
+        for m in metrics.values_mut() {
+            if m.spans.len() == 1 {
+                for meth in &mut m.methods {
+                    meth.file_id = None;
+                }
+            }
+        }
+
+        // Do NOT sort `scan.source_files` here — spans already reference
+        // these by index. The input list was sorted before iteration so the
+        // end state is deterministic and still index-aligned.
         scan.usings = usings.into_iter().collect();
         scan.declared_namespaces = namespaces.into_iter().collect();
         scan.declared_types = types
@@ -164,10 +198,20 @@ fn is_build_output(path: &Path) -> bool {
     false
 }
 
-fn extract_decls_file(path: &Path) -> Result<FileDecls> {
+fn extract_decls_file(path: &Path, file_id: u32) -> Result<FileDecls> {
     let src =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    extract_decls(&src)
+    let mut decls = extract_decls(&src)?;
+    // Stamp file_id on every span / method extracted from this file.
+    for (_, m) in decls.metrics.iter_mut() {
+        for sp in &mut m.spans {
+            sp.file_id = file_id;
+        }
+        for meth in &mut m.methods {
+            meth.file_id = Some(file_id);
+        }
+    }
+    Ok(decls)
 }
 
 /// Back-compat: extract only `using` targets. Used by the CLI's ast-dump.
@@ -232,11 +276,10 @@ const METHOD_LIKE_KINDS: &[&str] = &[
 
 /// Compute per-type metrics from its tree-sitter subtree.
 fn compute_metrics(node: tree_sitter::Node<'_>, src: &[u8]) -> TypeMetrics {
-    let loc = node
-        .end_position()
-        .row
-        .saturating_sub(node.start_position().row)
-        + 1;
+    // tree-sitter rows are 0-based; emit 1-based lines for display.
+    let line_start = node.start_position().row as u32 + 1;
+    let line_end = node.end_position().row as u32 + 1;
+    let loc = line_end.saturating_sub(line_start) + 1;
     let mut members: u32 = 0;
     let mut complexity: u32 = 0;
     let mut methods: Vec<crate::model::MethodMetric> = Vec::new();
@@ -290,9 +333,14 @@ fn compute_metrics(node: tree_sitter::Node<'_>, src: &[u8]) -> TypeMetrics {
     }
 
     TypeMetrics {
-        loc: loc as u32,
+        loc,
         members,
         complexity,
+        spans: vec![crate::model::SourceSpan {
+            file_id: 0, // filled in by `extract_decls_file`
+            line_start,
+            line_end,
+        }],
         methods,
         bases,
     }
@@ -304,11 +352,9 @@ fn method_metric(node: tree_sitter::Node<'_>, src: &[u8]) -> crate::model::Metho
         .and_then(|n| n.utf8_text(src).ok())
         .unwrap_or("<anonymous>")
         .to_string();
-    let loc = node
-        .end_position()
-        .row
-        .saturating_sub(node.start_position().row)
-        + 1;
+    let line_start = node.start_position().row as u32 + 1;
+    let line_end = node.end_position().row as u32 + 1;
+    let loc = line_end.saturating_sub(line_start) + 1;
     let mut complexity: u32 = 0;
     let mut cursor = node.walk();
     if cursor.goto_first_child() {
@@ -316,8 +362,11 @@ fn method_metric(node: tree_sitter::Node<'_>, src: &[u8]) -> crate::model::Metho
     }
     crate::model::MethodMetric {
         name,
-        loc: loc as u32,
+        line_start,
+        line_end,
+        loc,
         complexity,
+        file_id: None, // stamped by `extract_decls_file`
     }
 }
 

@@ -213,6 +213,7 @@ mod tests {
             declared_types,
             type_metrics: BTreeMap::new(),
             referenced_types: refs.iter().map(|s| (*s).to_string()).collect(),
+            source_files: Vec::new(),
         }
     }
 

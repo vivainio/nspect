@@ -827,6 +827,7 @@ mod tests {
             declared_types: std::collections::BTreeMap::new(),
             type_metrics: std::collections::BTreeMap::new(),
             referenced_types: Vec::new(),
+            source_files: Vec::new(),
         }
     }
 

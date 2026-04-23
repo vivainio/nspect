@@ -36,23 +36,125 @@ pub enum Command {
     /// Report everything the atlas artifacts know about a type (declaring
     /// project, namespace, metrics, cross-project callers).
     Lookup(LookupArgs),
+    /// Create `.nspect/atlas/` in the repo root, add it to `.gitignore`, and
+    /// populate it with a full atlas (`--check --references`).
+    Init(InitArgs),
+}
+
+#[derive(Debug, Parser)]
+pub struct InitArgs {
+    /// Repository root. Defaults to the current directory.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+}
+
+pub fn run_init(args: InitArgs) -> Result<()> {
+    let root = args
+        .path
+        .canonicalize()
+        .with_context(|| format!("resolving {}", args.path.display()))?;
+    let atlas_dir = root.join(".nspect").join("atlas");
+    std::fs::create_dir_all(&atlas_dir)
+        .with_context(|| format!("creating {}", atlas_dir.display()))?;
+    ensure_gitignore(&root)?;
+
+    run_atlas(AtlasArgs {
+        path: root,
+        format: AtlasFormat::Yaml,
+        compact: false,
+        output_dir: Some(atlas_dir),
+        check: false,
+        references: false,
+        full: true,
+    })
+}
+
+fn discover_atlas_dir() -> Result<PathBuf> {
+    let start = std::env::current_dir().context("getting current directory")?;
+    let mut cur: &std::path::Path = &start;
+    loop {
+        let candidate = cur.join(".nspect").join("atlas");
+        if candidate.is_dir() {
+            return Ok(candidate);
+        }
+        match cur.parent() {
+            Some(p) => cur = p,
+            None => {
+                anyhow::bail!(
+                    "no `.nspect/atlas` found walking up from {}. Run `nspect init` at the repo root, or pass --atlas-dir.",
+                    start.display()
+                );
+            }
+        }
+    }
+}
+
+fn ensure_gitignore(root: &std::path::Path) -> Result<()> {
+    let gi = root.join(".gitignore");
+    let entry = "/.nspect/";
+    let existing = std::fs::read_to_string(&gi).unwrap_or_default();
+    if existing
+        .lines()
+        .any(|l| l.trim() == entry || l.trim() == ".nspect/" || l.trim() == ".nspect")
+    {
+        return Ok(());
+    }
+    let mut body = existing;
+    if !body.is_empty() && !body.ends_with('\n') {
+        body.push('\n');
+    }
+    body.push_str(entry);
+    body.push('\n');
+    std::fs::write(&gi, body).with_context(|| format!("writing {}", gi.display()))?;
+    eprintln!("added {entry} to {}", gi.display());
+    Ok(())
 }
 
 #[derive(Debug, Parser)]
 pub struct LookupArgs {
-    /// Type name (simple, e.g. `Customer`) or fully-qualified (e.g.
-    /// `Acme.Domain.Customer`). Nested types may be passed with their
-    /// dotted local path.
-    pub name: String,
+    /// Type names to look up — simple (e.g. `Customer`) or fully-qualified
+    /// (e.g. `Acme.Domain.Customer`). Nested types may use their dotted
+    /// local path. Multiple names may be passed; combine freely with
+    /// `--file`. At least one of names or `--file` is required.
+    pub names: Vec<String>,
+    /// Look up by source file. Suffix match, so `Customer.cs` or a deeper
+    /// `Src/Domain/Customer.cs` both work. Repeatable.
+    #[arg(long)]
+    pub file: Vec<PathBuf>,
     /// Directory containing `atlas.yaml` / `classes.yaml` / `metrics.yaml` /
-    /// `references.yaml`. Defaults to the current directory.
-    #[arg(long, default_value = ".")]
-    pub atlas_dir: PathBuf,
+    /// `references.yaml`. If omitted, walks up from the current directory
+    /// looking for `.nspect/atlas` (as produced by `nspect init`).
+    #[arg(long)]
+    pub atlas_dir: Option<PathBuf>,
+    /// Skip the tree-sitter re-parse that turns method names into full
+    /// signatures. Useful when the source tree has drifted or when you only
+    /// need line ranges.
+    #[arg(long)]
+    pub no_sig: bool,
 }
 
 pub fn run_lookup(args: LookupArgs) -> Result<()> {
-    let result = lookup::run(&args.atlas_dir, &args.name)?;
-    print!("{}", serde_yaml::to_string(&result)?);
+    if args.names.is_empty() && args.file.is_empty() {
+        anyhow::bail!("pass at least one type name or `--file <path>`");
+    }
+    let atlas_dir = match args.atlas_dir {
+        Some(p) => p,
+        None => discover_atlas_dir()?,
+    };
+    let opts = lookup::Options {
+        signatures: !args.no_sig,
+    };
+    let mut cache = lookup::SigCache::new();
+    let mut types = Vec::with_capacity(args.names.len());
+    for name in &args.names {
+        types.push(lookup::run_with(&atlas_dir, name, opts, &mut cache)?);
+    }
+    let mut files = Vec::with_capacity(args.file.len());
+    for f in &args.file {
+        files.push(lookup::run_file(&atlas_dir, f)?);
+    }
+    let out = lookup::BatchOutput { types, files };
+    print!("{}", serde_yaml::to_string(&out)?);
     Ok(())
 }
 
@@ -128,6 +230,9 @@ pub struct AtlasArgs {
     /// (already produced in `--output-dir` mode).
     #[arg(long)]
     pub references: bool,
+    /// Shorthand for `--check --references`.
+    #[arg(long)]
+    pub full: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -265,7 +370,11 @@ fn print_top_methods(projects: &[Project], filter: &Option<String>, top: usize) 
     }
 }
 
-pub fn run_atlas(args: AtlasArgs) -> Result<()> {
+pub fn run_atlas(mut args: AtlasArgs) -> Result<()> {
+    if args.full {
+        args.check = true;
+        args.references = true;
+    }
     let mut projects = load_projects(&args.path)?;
     let opts = atlas::AtlasOptions { check: args.check };
 
@@ -681,6 +790,7 @@ pub fn apply_source_scan(projects: &mut [Project]) -> Result<()> {
         p.declared_types = s.declared_types;
         p.type_metrics = s.type_metrics;
         p.referenced_types = s.referenced_types;
+        p.source_files = s.source_files;
     }
     Ok(())
 }
