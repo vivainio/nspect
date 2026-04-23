@@ -17,5 +17,7 @@ fn main() -> Result<()> {
         Command::Graph(args) => nspect::cli::run_graph(args),
         Command::Check(args) => nspect::cli::run_check(args),
         Command::TsDump(args) => nspect::cli::run_ts_dump(args),
+        Command::Atlas(args) => nspect::cli::run_atlas(args),
+        Command::Focus(args) => nspect::cli::run_focus(args),
     }
 }

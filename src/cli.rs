@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
-    analysis, cpm, csproj, discovery, graph::ProjectGraph, model::Project, report, sln,
+    analysis, atlas, cpm, csproj, discovery, graph::ProjectGraph, model::Project, report, sln,
     source_scan,
 };
 
@@ -25,6 +25,80 @@ pub enum Command {
     Check(CheckArgs),
     /// Dump the tree-sitter C# parse of a single `.cs` file (S-expression + extracted `using`s).
     TsDump(TsDumpArgs),
+    /// Emit a structural snapshot (areas, projects, edges, layers) as JSON.
+    Atlas(AtlasArgs),
+    /// Visualize the dependency neighborhood of a single project.
+    Focus(FocusArgs),
+}
+
+#[derive(Debug, Parser)]
+pub struct FocusArgs {
+    /// Repository root, a `.sln`, or a `.csproj` file.
+    pub path: PathBuf,
+    /// Project name (exact, suffix, or unique substring match).
+    pub project: String,
+    /// How many hops of reverse refs to include (projects that depend on this one).
+    #[arg(long, default_value_t = 1)]
+    pub up: u32,
+    /// How many hops of forward refs to include (projects this one depends on).
+    #[arg(long, default_value_t = 1)]
+    pub down: u32,
+    #[arg(long, value_enum, default_value_t = GraphFormat::Text)]
+    pub format: GraphFormat,
+}
+
+pub fn run_focus(args: FocusArgs) -> Result<()> {
+    let projects = load_projects(&args.path)?;
+    let atlas_model = atlas::build(projects, &args.path);
+    let focus_id = match atlas::resolve_project(&atlas_model, &args.project) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
+    let view = atlas::focus(&atlas_model, &focus_id, args.up, args.down);
+    let out = match args.format {
+        GraphFormat::Dot => view.to_dot(),
+        GraphFormat::Mermaid => view.to_mermaid(),
+        GraphFormat::Text => view.to_text(),
+        GraphFormat::Json => serde_json::to_string_pretty(&serde_json::json!({
+            "focus": focus_id,
+            "nodes": view.nodes.iter().map(|p| &p.id).collect::<Vec<_>>(),
+            "edges": view.edges.iter().map(|(f, t)| [f, t]).collect::<Vec<_>>(),
+        }))?,
+    };
+    println!("{out}");
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum AtlasFormat {
+    Json,
+    Yaml,
+}
+
+#[derive(Debug, Parser)]
+pub struct AtlasArgs {
+    /// Repository root, a `.sln`, or a `.csproj` file.
+    pub path: PathBuf,
+    #[arg(long, value_enum, default_value_t = AtlasFormat::Json)]
+    pub format: AtlasFormat,
+    /// Emit compact single-line JSON (has no effect on YAML output).
+    #[arg(long)]
+    pub compact: bool,
+}
+
+pub fn run_atlas(args: AtlasArgs) -> Result<()> {
+    let projects = load_projects(&args.path)?;
+    let atlas = atlas::build(projects, &args.path);
+    let out = match args.format {
+        AtlasFormat::Json if args.compact => serde_json::to_string(&atlas)?,
+        AtlasFormat::Json => serde_json::to_string_pretty(&atlas)?,
+        AtlasFormat::Yaml => serde_yaml::to_string(&atlas)?,
+    };
+    print!("{out}");
+    Ok(())
 }
 
 #[derive(Debug, Parser)]
@@ -334,7 +408,48 @@ pub fn load_projects(root: &std::path::Path) -> Result<Vec<Project>> {
         }
     }
     projects.sort_by(|a, b| a.name.cmp(&b.name));
+    resolve_assembly_refs(&mut projects);
     Ok(projects)
+}
+
+/// Resolve bare `<Reference Include="X"/>` assembly refs against sibling projects
+/// in the same load. Legacy .NET Framework csprojs depend on sibling projects
+/// this way (no HintPath means "same output directory"). When the simple
+/// assembly name matches another project's name / AssemblyName, promote the
+/// ref to a real project-ref so the graph sees the edge.
+///
+/// Unresolved entries stay in `assembly_refs` as external refs.
+pub fn resolve_assembly_refs(projects: &mut [Project]) {
+    use std::collections::HashMap;
+    let mut by_name: HashMap<String, PathBuf> = HashMap::new();
+    for p in projects.iter() {
+        by_name.insert(p.name.to_lowercase(), p.path.clone());
+    }
+    for p in projects.iter_mut() {
+        let mut resolved: Vec<PathBuf> = Vec::new();
+        let mut external: Vec<String> = Vec::new();
+        for asm in p.assembly_refs.drain(..) {
+            let simple = asm.split(',').next().unwrap_or(&asm).trim();
+            if let Some(path) = by_name.get(&simple.to_lowercase()) {
+                if *path != p.path {
+                    resolved.push(path.clone());
+                    continue;
+                }
+            }
+            external.push(asm);
+        }
+        p.assembly_refs = external;
+        let existing: std::collections::HashSet<PathBuf> = p
+            .project_refs
+            .iter()
+            .map(|r| csproj::canonicalize(r))
+            .collect();
+        for path in resolved {
+            if !existing.contains(&path) {
+                p.project_refs.push(path);
+            }
+        }
+    }
 }
 
 /// Run source scan (tree-sitter) over each project and attach the discovered usings.

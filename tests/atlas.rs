@@ -1,0 +1,134 @@
+use std::path::PathBuf;
+
+use nspect::atlas;
+
+fn fixture(name: &str) -> PathBuf {
+    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    p.push("tests/fixtures");
+    p.push(name);
+    p
+}
+
+fn build_atlas(name: &str) -> atlas::Atlas {
+    let root = fixture(name);
+    let projects = nspect::cli::load_projects(&root).expect("load");
+    atlas::build(projects, &root)
+}
+
+#[test]
+fn projects_are_loaded_from_all_source_trees() {
+    let a = build_atlas("atlas");
+    let names: Vec<&str> = a.projects.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(a.projects.len(), 7, "got {names:?}");
+    for expected in ["Core", "Utils", "Domain", "Api", "Ui", "Domain.Tests", "Widget"] {
+        assert!(names.contains(&expected), "missing {expected} in {names:?}");
+    }
+}
+
+#[test]
+fn areas_are_derived_from_path_after_src() {
+    let a = build_atlas("atlas");
+    let by_name: std::collections::HashMap<&str, &atlas::AtlasProject> =
+        a.projects.iter().map(|p| (p.name.as_str(), p)).collect();
+    // Src/Common/* → "Common"; Src/Billing/* → "Billing"; Legacy/Widget → "Legacy".
+    assert_eq!(by_name["Core"].area, "Common");
+    assert_eq!(by_name["Utils"].area, "Common");
+    assert_eq!(by_name["Domain"].area, "Billing");
+    assert_eq!(by_name["Api"].area, "Billing");
+    assert_eq!(by_name["Ui"].area, "Billing");
+    assert_eq!(by_name["Domain.Tests"].area, "Billing");
+    assert_eq!(by_name["Widget"].area, "Legacy");
+
+    let areas: Vec<&str> = a.areas.iter().map(|ar| ar.name.as_str()).collect();
+    assert_eq!(areas, vec!["Billing", "Common", "Legacy"]);
+}
+
+#[test]
+fn legacy_reference_resolves_to_sibling_project() {
+    // Widget uses bare `<Reference Include="Core">` (legacy .NET Fx idiom).
+    // Atlas must treat that as a project-ref, not an external ref.
+    let a = build_atlas("atlas");
+    let widget = a.projects.iter().find(|p| p.name == "Widget").unwrap();
+    assert_eq!(widget.fan_out, 1, "Widget should have 1 resolved project ref");
+    assert_eq!(widget.project_refs, vec!["Core".to_string()]);
+    // System stays as an external ref, Core does not appear there.
+    let ext_names: Vec<&str> = widget
+        .refs
+        .iter()
+        .map(|r| match r {
+            atlas::AtlasRef::Bare(n) => n.as_str(),
+            atlas::AtlasRef::Versioned { name, .. } => name.as_str(),
+        })
+        .collect();
+    assert!(ext_names.contains(&"System"));
+    assert!(!ext_names.contains(&"Core"));
+}
+
+#[test]
+fn layers_follow_dependency_depth() {
+    let a = build_atlas("atlas");
+    let by_name: std::collections::HashMap<&str, &atlas::AtlasProject> =
+        a.projects.iter().map(|p| (p.name.as_str(), p)).collect();
+    assert_eq!(by_name["Core"].layer, 0);
+    // Utils depends on Core.
+    assert_eq!(by_name["Utils"].layer, 1);
+    // Widget depends on Core via resolved assembly-ref.
+    assert_eq!(by_name["Widget"].layer, 1);
+    // Domain → Utils → Core.
+    assert_eq!(by_name["Domain"].layer, 2);
+    // Api, Ui, Domain.Tests all depend on Domain directly.
+    assert_eq!(by_name["Api"].layer, 3);
+    assert_eq!(by_name["Ui"].layer, 3);
+    assert_eq!(by_name["Domain.Tests"].layer, 3);
+}
+
+#[test]
+fn composition_roots_exclude_tests() {
+    let a = build_atlas("atlas");
+    // Api, Ui, Widget have fan_in=0 and fan_out>0 → composition roots.
+    // Domain.Tests also has fan_in=0 and fan_out>0 but name ends with .Tests → excluded.
+    let mut roots = a.composition_roots.clone();
+    roots.sort();
+    assert_eq!(roots, vec!["Api", "Ui", "Widget"]);
+    assert!(!roots.contains(&"Domain.Tests".to_string()));
+}
+
+#[test]
+fn no_cycles_and_no_orphans_in_clean_fixture() {
+    let a = build_atlas("atlas");
+    assert!(a.cycles.is_empty(), "unexpected cycles: {:?}", a.cycles);
+    assert!(a.orphans.is_empty(), "unexpected orphans: {:?}", a.orphans);
+    assert!(a.unresolved.is_empty(), "unexpected unresolved: {:?}", a.unresolved);
+}
+
+#[test]
+fn fan_in_and_fan_out_counts_are_correct() {
+    let a = build_atlas("atlas");
+    let by_name: std::collections::HashMap<&str, &atlas::AtlasProject> =
+        a.projects.iter().map(|p| (p.name.as_str(), p)).collect();
+    // Core has two dependents: Utils and Widget.
+    assert_eq!(by_name["Core"].fan_in, 2);
+    assert_eq!(by_name["Core"].fan_out, 0);
+    // Domain has three dependents: Api, Ui, Domain.Tests.
+    assert_eq!(by_name["Domain"].fan_in, 3);
+    assert_eq!(by_name["Domain"].fan_out, 1);
+}
+
+#[test]
+fn paths_are_relative_to_scan_root() {
+    let a = build_atlas("atlas");
+    for p in &a.projects {
+        assert!(
+            p.path.is_relative(),
+            "path {} should be relative to scan root",
+            p.path.display()
+        );
+    }
+    for ar in &a.areas {
+        assert!(
+            ar.root.is_relative(),
+            "area root {} should be relative",
+            ar.root.display()
+        );
+    }
+}
