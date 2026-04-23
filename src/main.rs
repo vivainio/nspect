@@ -19,5 +19,6 @@ fn main() -> Result<()> {
         Command::Atlas(args) => nspect::cli::run_atlas(args),
         Command::Metrics(args) => nspect::cli::run_metrics(args),
         Command::Focus(args) => nspect::cli::run_focus(args),
+        Command::Lookup(args) => nspect::cli::run_lookup(args),
     }
 }

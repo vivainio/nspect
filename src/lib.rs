@@ -6,6 +6,7 @@ pub mod cpm;
 pub mod csproj;
 pub mod discovery;
 pub mod graph;
+pub mod lookup;
 pub mod metrics;
 pub mod model;
 pub mod references;

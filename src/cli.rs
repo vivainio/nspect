@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
-    atlas, classes, cpm, csproj, discovery, graph::ProjectGraph, metrics, model::Project,
+    atlas, classes, cpm, csproj, discovery, graph::ProjectGraph, lookup, metrics, model::Project,
     references, report, sln, source_scan,
 };
 
@@ -33,6 +33,27 @@ pub enum Command {
     Metrics(MetricsArgs),
     /// Visualize the dependency neighborhood of a single project.
     Focus(FocusArgs),
+    /// Report everything the atlas artifacts know about a type (declaring
+    /// project, namespace, metrics, cross-project callers).
+    Lookup(LookupArgs),
+}
+
+#[derive(Debug, Parser)]
+pub struct LookupArgs {
+    /// Type name (simple, e.g. `Customer`) or fully-qualified (e.g.
+    /// `Acme.Domain.Customer`). Nested types may be passed with their
+    /// dotted local path.
+    pub name: String,
+    /// Directory containing `atlas.yaml` / `classes.yaml` / `metrics.yaml` /
+    /// `references.yaml`. Defaults to the current directory.
+    #[arg(long, default_value = ".")]
+    pub atlas_dir: PathBuf,
+}
+
+pub fn run_lookup(args: LookupArgs) -> Result<()> {
+    let result = lookup::run(&args.atlas_dir, &args.name)?;
+    print!("{}", serde_yaml::to_string(&result)?);
+    Ok(())
 }
 
 #[derive(Debug, Parser)]
