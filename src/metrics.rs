@@ -81,7 +81,7 @@ fn per_project(p: &Project, root: &Path) -> ProjectMetrics {
             .or_default()
             .entry(kind)
             .or_default()
-            .insert(local.to_string(), *metrics);
+            .insert(local.to_string(), metrics.clone());
     }
 
     ProjectMetrics {

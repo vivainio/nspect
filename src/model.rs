@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 /// Cheap structural metrics computed per type during the tree-sitter scan.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct TypeMetrics {
     /// Source lines spanned by the type declaration (inclusive).
     pub loc: u32,
@@ -14,6 +14,19 @@ pub struct TypeMetrics {
     /// McCabe-ish branch count inside the type's subtree: `if`, `while`,
     /// `for`, `foreach`, `do`, `case`, `catch`, ternary, and `when` clauses.
     /// Branches inside nested types count toward their enclosing type too.
+    pub complexity: u32,
+    /// Per-method breakdown — only direct method/ctor/op members of this
+    /// type's body, not members of nested types. Empty for enums/delegates
+    /// and types with no method-shaped members.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<MethodMetric>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct MethodMetric {
+    /// Method, ctor, dtor, or operator name. Overloads share a name.
+    pub name: String,
+    pub loc: u32,
     pub complexity: u32,
 }
 

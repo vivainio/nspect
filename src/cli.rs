@@ -27,6 +27,8 @@ pub enum Command {
     TsDump(TsDumpArgs),
     /// Emit a structural snapshot (areas, projects, edges, layers) as JSON.
     Atlas(AtlasArgs),
+    /// Text summary of structural metrics for a path (repo root or subdir).
+    Metrics(MetricsArgs),
     /// Visualize the dependency neighborhood of a single project.
     Focus(FocusArgs),
 }
@@ -91,6 +93,141 @@ pub struct AtlasArgs {
     /// stdout. Currently produces `atlas.<ext>` and `classes.<ext>`.
     #[arg(long)]
     pub output_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
+pub struct MetricsArgs {
+    /// Repository root, a subdirectory, a `.sln`, or a `.csproj` file.
+    pub path: PathBuf,
+    /// How many top methods by complexity to list (0 disables the section).
+    #[arg(long, default_value_t = 20)]
+    pub top: usize,
+    /// Restrict the top-methods section to a single project (name or suffix).
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+pub fn run_metrics(args: MetricsArgs) -> Result<()> {
+    let mut projects = load_projects(&args.path)?;
+    apply_source_scan(&mut projects)?;
+
+    let mut rows: Vec<(String, metrics::ProjectTotals)> = projects
+        .iter()
+        .map(|p| (p.name.clone(), metrics::project_totals(p)))
+        .collect();
+    rows.sort_by(|a, b| b.1.complexity.cmp(&a.1.complexity).then(a.0.cmp(&b.0)));
+
+    let name_w = rows.iter().map(|(n, _)| n.len()).max().unwrap_or(4).max(12);
+    println!(
+        "{:<name_w$}  {:>6}  {:>7}  {:>7}  {:>10}",
+        "project",
+        "types",
+        "loc",
+        "members",
+        "complexity",
+        name_w = name_w
+    );
+    println!("{}", "-".repeat(name_w + 2 + 6 + 2 + 7 + 2 + 7 + 2 + 10));
+    let mut grand = metrics::ProjectTotals::default();
+    for (name, t) in &rows {
+        println!(
+            "{:<name_w$}  {:>6}  {:>7}  {:>7}  {:>10}",
+            name,
+            t.types,
+            t.loc,
+            t.members,
+            t.complexity,
+            name_w = name_w
+        );
+        grand.types += t.types;
+        grand.loc += t.loc;
+        grand.members += t.members;
+        grand.complexity += t.complexity;
+    }
+    println!("{}", "-".repeat(name_w + 2 + 6 + 2 + 7 + 2 + 7 + 2 + 10));
+    println!(
+        "{:<name_w$}  {:>6}  {:>7}  {:>7}  {:>10}",
+        "TOTAL",
+        grand.types,
+        grand.loc,
+        grand.members,
+        grand.complexity,
+        name_w = name_w
+    );
+
+    if args.top > 0 {
+        print_top_methods(&projects, &args.project, args.top);
+    }
+
+    Ok(())
+}
+
+fn print_top_methods(projects: &[Project], filter: &Option<String>, top: usize) {
+    let matches_project = |p: &Project| -> bool {
+        match filter {
+            None => true,
+            Some(q) => p.name == *q || p.name.ends_with(&format!(".{q}")) || p.name.contains(q),
+        }
+    };
+
+    // Flatten: (project_name, type_fqn, method_name, loc, complexity)
+    let mut methods: Vec<(String, String, String, u32, u32)> = Vec::new();
+    for p in projects {
+        if !matches_project(p) {
+            continue;
+        }
+        for (type_fqn, tm) in &p.type_metrics {
+            for mm in &tm.methods {
+                methods.push((
+                    p.name.clone(),
+                    type_fqn.clone(),
+                    mm.name.clone(),
+                    mm.loc,
+                    mm.complexity,
+                ));
+            }
+        }
+    }
+    if methods.is_empty() {
+        return;
+    }
+    methods.sort_by(|a, b| b.4.cmp(&a.4).then(b.3.cmp(&a.3)).then(a.0.cmp(&b.0)));
+
+    // When only one project is in scope, drop the redundant `project::` prefix.
+    let distinct_projects: std::collections::HashSet<&str> =
+        methods.iter().map(|m| m.0.as_str()).collect();
+    let single = distinct_projects.len() == 1;
+
+    let header = match filter {
+        None => format!("top {} methods by complexity", top.min(methods.len())),
+        Some(q) => format!(
+            "top {} methods by complexity in {}",
+            top.min(methods.len()),
+            q
+        ),
+    };
+    println!("\n{header}:");
+    let loc_w = 5;
+    let cx_w = 10;
+    for (project, type_fqn, method, loc, cx) in methods.iter().take(top) {
+        if single {
+            println!(
+                "  {cx:>cx_w$}  {loc:>loc_w$}  {type_fqn}.{method}",
+                cx = cx,
+                loc = loc,
+                cx_w = cx_w,
+                loc_w = loc_w,
+            );
+        } else {
+            println!(
+                "  {cx:>cx_w$}  {loc:>loc_w$}  {project}::{type_fqn}.{method}",
+                cx = cx,
+                loc = loc,
+                cx_w = cx_w,
+                loc_w = loc_w,
+            );
+        }
+    }
 }
 
 pub fn run_atlas(args: AtlasArgs) -> Result<()> {

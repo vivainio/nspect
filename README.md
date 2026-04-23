@@ -1,6 +1,6 @@
 # nspect
 
-A Rust CLI that analyzes the **structure** of C# projects and solutions: dependency graphs, package references, version conflicts, and a best-effort cross-check between declared packages and what the source actually imports.
+A Rust CLI that analyzes the **structure** of C# projects and solutions: dependency graphs, package references, version conflicts, structural metrics (LOC / members / cyclomatic complexity), and a best-effort cross-check between declared packages and what the source actually imports.
 
 Not a compiler, not Roslyn. Fast, read-only, works from the filesystem — no NuGet restore, no MSBuild evaluation.
 
@@ -61,6 +61,55 @@ Flags:
 
 - `--json` — structured output instead of a text report
 - `--no-source-scan` — skip the tree-sitter pass (disables `unused_package_ref` + `undeclared_usage`, ~100× faster on big monorepos)
+
+### `nspect atlas <path>`
+
+Emit a structural snapshot of the repo as YAML (default) or JSON: areas, projects with fan-in/fan-out/layer, and internal vs. external references.
+
+```bash
+nspect atlas ./my-repo                       # YAML to stdout
+nspect atlas ./my-repo --format json         # JSON
+nspect atlas ./my-repo --output-dir ./out    # writes three files (see below)
+```
+
+With `--output-dir`, the tree-sitter source scan runs and three artifacts are written side by side:
+
+| File | Contents |
+|---|---|
+| `atlas.yaml` | Project graph (areas, fan-in/fan-out, layers, refs). Each project also gains a `weight:` block with aggregate `types`, `loc`, `members`, `complexity`. |
+| `classes.yaml` | Declared types per project, grouped by namespace and bucketed by kind (`class`, `interface`, `struct`, `record`, `record_struct`, `enum`, `delegate`). Nested types keep a dotted local path (e.g. `Outer.Inner`). |
+| `metrics.yaml` | Same shape as `classes.yaml` but values are `{loc, members, complexity, methods}` per type, plus a per-project `totals:` block. |
+
+Without `--output-dir`, only the atlas itself is emitted (to stdout) and no source scan is performed.
+
+### `nspect metrics <path>`
+
+Fast text summary of structural metrics — runs the tree-sitter pass, prints a per-project table plus the top methods by cyclomatic complexity. Scope is whatever csprojs live under `<path>`, so you can point it at a single `.csproj`, a subdirectory, or the whole repo:
+
+```
+$ nspect metrics tests/fixtures/sourcescan --top 5
+project        types      loc  members  complexity
+--------------------------------------------------
+App                1        9        1           0
+--------------------------------------------------
+TOTAL              1        9        1           0
+
+top 1 methods by complexity:
+           0      6  App.Program.Main
+```
+
+When the scope contains more than one project, each method in the top-N section is prefixed with `project::` to disambiguate.
+
+Flags:
+
+- `--top <N>` — how many top methods to list (default 20, `0` disables the section)
+- `--project <name>` — restrict the methods section to a single project (exact, suffix, or substring match)
+
+Metric definitions:
+
+- **loc** — source lines spanned by the type / method declaration.
+- **members** — direct methods, properties, fields, ctors, events, indexers. Nested types are *not* counted as members.
+- **complexity** — McCabe-ish branch count: `if`, `while`, `for`, `foreach`, `do`, `case`, `catch`, ternary `?:`, `when` clauses. Logical `&&` / `||` are currently **not** counted. Branches inside nested types count toward the enclosing type.
 
 ### `nspect ts-dump <file.cs>`
 

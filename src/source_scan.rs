@@ -105,6 +105,7 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
                         slot.loc = slot.loc.saturating_add(m.loc);
                         slot.members = slot.members.saturating_add(m.members);
                         slot.complexity = slot.complexity.saturating_add(m.complexity);
+                        slot.methods.extend(m.methods);
                     }
                     scan.source_files.push(path.to_path_buf());
                 }
@@ -199,8 +200,16 @@ const BRANCH_KINDS: &[&str] = &[
     "when_clause",
 ];
 
+const METHOD_LIKE_KINDS: &[&str] = &[
+    "method_declaration",
+    "constructor_declaration",
+    "destructor_declaration",
+    "operator_declaration",
+    "conversion_operator_declaration",
+];
+
 /// Compute per-type metrics from its tree-sitter subtree.
-fn compute_metrics(node: tree_sitter::Node<'_>) -> TypeMetrics {
+fn compute_metrics(node: tree_sitter::Node<'_>, src: &[u8]) -> TypeMetrics {
     let loc = node
         .end_position()
         .row
@@ -208,26 +217,31 @@ fn compute_metrics(node: tree_sitter::Node<'_>) -> TypeMetrics {
         + 1;
     let mut members: u32 = 0;
     let mut complexity: u32 = 0;
+    let mut methods: Vec<crate::model::MethodMetric> = Vec::new();
 
-    // Direct members: children of the body node (usually `declaration_list`).
-    if let Some(body) = node.child_by_field_name("body") {
-        let mut bc = body.walk();
-        for child in body.named_children(&mut bc) {
-            if MEMBER_KINDS.contains(&child.kind()) {
-                members += 1;
+    // Iterate direct body children to count members and collect per-method
+    // metrics. Some grammars expose the body via a `body` field; others as
+    // a direct `declaration_list` child — handle both.
+    let body = node.child_by_field_name("body").or_else(|| {
+        let mut tc = node.walk();
+        let mut found = None;
+        for c in node.named_children(&mut tc) {
+            if c.kind() == "declaration_list" {
+                found = Some(c);
+                break;
             }
         }
-    } else {
-        // Some grammars expose the body as a direct `declaration_list` child.
-        let mut tc = node.walk();
-        for child in node.named_children(&mut tc) {
-            if child.kind() == "declaration_list" {
-                let mut bc = child.walk();
-                for m in child.named_children(&mut bc) {
-                    if MEMBER_KINDS.contains(&m.kind()) {
-                        members += 1;
-                    }
-                }
+        found
+    });
+    if let Some(body) = body {
+        let mut bc = body.walk();
+        for child in body.named_children(&mut bc) {
+            let kind = child.kind();
+            if MEMBER_KINDS.contains(&kind) {
+                members += 1;
+            }
+            if METHOD_LIKE_KINDS.contains(&kind) {
+                methods.push(method_metric(child, src));
             }
         }
     }
@@ -243,6 +257,30 @@ fn compute_metrics(node: tree_sitter::Node<'_>) -> TypeMetrics {
     TypeMetrics {
         loc: loc as u32,
         members,
+        complexity,
+        methods,
+    }
+}
+
+fn method_metric(node: tree_sitter::Node<'_>, src: &[u8]) -> crate::model::MethodMetric {
+    let name = node
+        .child_by_field_name("name")
+        .and_then(|n| n.utf8_text(src).ok())
+        .unwrap_or("<anonymous>")
+        .to_string();
+    let loc = node
+        .end_position()
+        .row
+        .saturating_sub(node.start_position().row)
+        + 1;
+    let mut complexity: u32 = 0;
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        count_branches_siblings(&mut cursor, &mut complexity);
+    }
+    crate::model::MethodMetric {
+        name,
+        loc: loc as u32,
         complexity,
     }
 }
@@ -352,7 +390,7 @@ fn visit(
                             format!("{prefix}.{name}")
                         };
                         out.types.push((type_kind, full.clone()));
-                        out.metrics.push((full.clone(), compute_metrics(node)));
+                        out.metrics.push((full.clone(), compute_metrics(node, src)));
                         ty_stack.push(full);
                         pushed_ty = true;
                     }
@@ -482,12 +520,16 @@ namespace N {
             .iter()
             .find(|(n, _)| n == "N.A")
             .expect("N.A metrics");
-        let m = a.1;
+        let m = &a.1;
         // One field + one method = 2 direct members (nested type isn't counted).
         assert_eq!(m.members, 2);
         // 2 if, 1 for, 1 while, 1 catch, 1 ternary = 6.
         assert_eq!(m.complexity, 6);
         assert!(m.loc >= 15);
+        // Per-method breakdown: the single method M should appear.
+        assert_eq!(m.methods.len(), 1);
+        assert_eq!(m.methods[0].name, "M");
+        assert_eq!(m.methods[0].complexity, 6);
         // Inner type is tracked separately with its own (zero) metrics.
         let inner = d.metrics.iter().find(|(n, _)| n == "N.A.Inner").unwrap();
         assert_eq!(inner.1.members, 0);
