@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
-    analysis, atlas, classes, cpm, csproj, discovery, graph::ProjectGraph, model::Project, report,
-    sln, source_scan,
+    analysis, atlas, classes, cpm, csproj, discovery, graph::ProjectGraph, metrics,
+    model::Project, report, sln, source_scan,
 };
 
 #[derive(Debug, Parser)]
@@ -114,6 +114,7 @@ pub fn run_atlas(args: AtlasArgs) -> Result<()> {
                 AtlasFormat::Yaml => "yaml",
             };
             let classes_snapshot = classes::build(&projects, &args.path);
+            let metrics_snapshot = metrics::build(&projects, &args.path);
             let atlas_model = atlas::build(projects, &args.path);
 
             write_artifact(
@@ -123,6 +124,10 @@ pub fn run_atlas(args: AtlasArgs) -> Result<()> {
             write_artifact(
                 &dir.join(format!("classes.{ext}")),
                 &encode_atlas(&classes_snapshot, args.format, args.compact)?,
+            )?;
+            write_artifact(
+                &dir.join(format!("metrics.{ext}")),
+                &encode_atlas(&metrics_snapshot, args.format, args.compact)?,
             )?;
         }
     }
@@ -512,6 +517,7 @@ pub fn apply_source_scan(projects: &mut [Project]) -> Result<()> {
         p.usings = s.usings;
         p.declared_namespaces = s.declared_namespaces;
         p.declared_types = s.declared_types;
+        p.type_metrics = s.type_metrics;
     }
     Ok(())
 }

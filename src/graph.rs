@@ -310,6 +310,7 @@ mod tests {
             usings: Vec::new(),
             declared_namespaces: Vec::new(),
             declared_types: std::collections::BTreeMap::new(),
+            type_metrics: std::collections::BTreeMap::new(),
         }
     }
 

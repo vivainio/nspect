@@ -3,6 +3,20 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
+/// Cheap structural metrics computed per type during the tree-sitter scan.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct TypeMetrics {
+    /// Source lines spanned by the type declaration (inclusive).
+    pub loc: u32,
+    /// Direct body members — methods, properties, fields, ctors, events, etc.
+    /// Nested types are not counted as members.
+    pub members: u32,
+    /// McCabe-ish branch count inside the type's subtree: `if`, `while`,
+    /// `for`, `foreach`, `do`, `case`, `catch`, ternary, and `when` clauses.
+    /// Branches inside nested types count toward their enclosing type too.
+    pub complexity: u32,
+}
+
 /// Kinds of type declarations tracked by the tree-sitter source scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,6 +52,10 @@ pub struct Project {
     /// bucketed by kind. Per-bucket lists are deduped and sorted.
     #[serde(default)]
     pub declared_types: BTreeMap<TypeKind, Vec<String>>,
+    /// Per-type metrics keyed by fully-qualified type name. Populated only
+    /// when the source scan ran.
+    #[serde(default)]
+    pub type_metrics: BTreeMap<String, TypeMetrics>,
 }
 
 #[derive(Debug, Clone, Serialize)]

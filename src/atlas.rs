@@ -54,6 +54,10 @@ pub struct AtlasProject {
     /// the cycle's max layer; `in_cycle` flags the ambiguity.
     pub layer: u32,
     pub in_cycle: bool,
+    /// Aggregate structural "weight" — sum of per-type metrics in this
+    /// project. `None` when the tree-sitter source scan didn't run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weight: Option<crate::metrics::ProjectTotals>,
 }
 
 /// External ref emitted as a plain string when it's a bare name, or as a
@@ -144,6 +148,13 @@ pub fn build(projects: Vec<Project>, scan_root: &Path) -> Atlas {
                     }
                 })
                 .collect();
+            // Only surface weight when the source scan actually ran — an
+            // empty map would otherwise misreport every project as zero.
+            let weight = if p.type_metrics.is_empty() {
+                None
+            } else {
+                Some(crate::metrics::project_totals(p))
+            };
             AtlasProject {
                 id: id_str(*id),
                 name: p.name.clone(),
@@ -157,6 +168,7 @@ pub fn build(projects: Vec<Project>, scan_root: &Path) -> Atlas {
                 fan_out: fan_out[id],
                 layer: layers.get(id).copied().unwrap_or(0),
                 in_cycle: in_cycle.contains(id),
+                weight,
             }
         })
         .collect();
@@ -760,6 +772,7 @@ mod tests {
             usings: Vec::new(),
             declared_namespaces: Vec::new(),
             declared_types: std::collections::BTreeMap::new(),
+            type_metrics: std::collections::BTreeMap::new(),
         }
     }
 

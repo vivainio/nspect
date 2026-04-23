@@ -127,6 +127,7 @@ mod tests {
             usings: vec![],
             declared_namespaces: nss.iter().map(|s| s.to_string()).collect(),
             declared_types,
+            type_metrics: BTreeMap::new(),
         }
     }
 

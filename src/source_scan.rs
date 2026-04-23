@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use tree_sitter::{Parser, TreeCursor};
 
-use crate::model::TypeKind;
+use crate::model::{TypeKind, TypeMetrics};
 
 /// Result of scanning one project's sources.
 #[derive(Debug, Clone, Default)]
@@ -25,6 +25,8 @@ pub struct SourceScan {
     /// Nested types are joined with `.`. Per-bucket lists are deduped and
     /// sorted; empty buckets are omitted.
     pub declared_types: BTreeMap<TypeKind, Vec<String>>,
+    /// Per-type metrics keyed by fully-qualified type name.
+    pub type_metrics: BTreeMap<String, TypeMetrics>,
 }
 
 /// Per-file extraction output.
@@ -33,6 +35,7 @@ pub struct FileDecls {
     pub usings: Vec<String>,
     pub namespaces: Vec<String>,
     pub types: Vec<(TypeKind, String)>,
+    pub metrics: Vec<(String, TypeMetrics)>,
 }
 
 /// Scan `.cs` files under each project. Files inside a nested project's
@@ -57,6 +60,7 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
         let mut usings = BTreeSet::new();
         let mut namespaces = BTreeSet::new();
         let mut types: BTreeMap<TypeKind, BTreeSet<String>> = BTreeMap::new();
+        let mut metrics: BTreeMap<String, TypeMetrics> = BTreeMap::new();
 
         let walker = WalkBuilder::new(project_dir)
             .follow_links(false)
@@ -95,6 +99,13 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
                     for (kind, name) in found.types {
                         types.entry(kind).or_default().insert(name);
                     }
+                    for (name, m) in found.metrics {
+                        // Partial classes declared across multiple files: sum.
+                        let slot = metrics.entry(name).or_default();
+                        slot.loc = slot.loc.saturating_add(m.loc);
+                        slot.members = slot.members.saturating_add(m.members);
+                        slot.complexity = slot.complexity.saturating_add(m.complexity);
+                    }
                     scan.source_files.push(path.to_path_buf());
                 }
                 Err(e) => {
@@ -110,6 +121,7 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
             .into_iter()
             .map(|(k, set)| (k, set.into_iter().collect()))
             .collect();
+        scan.type_metrics = metrics;
         let total_types: usize = scan.declared_types.values().map(Vec::len).sum();
         tracing::debug!(
             "{}: {} sources, {} usings, {} ns, {} types",
@@ -160,6 +172,94 @@ pub fn extract_decls(src: &str) -> Result<FileDecls> {
     let mut ty_stack: Vec<String> = Vec::new();
     visit(&mut cursor, src.as_bytes(), &mut ns_stack, &mut ty_stack, &mut out);
     Ok(out)
+}
+
+const MEMBER_KINDS: &[&str] = &[
+    "method_declaration",
+    "property_declaration",
+    "field_declaration",
+    "constructor_declaration",
+    "event_declaration",
+    "event_field_declaration",
+    "indexer_declaration",
+    "destructor_declaration",
+    "operator_declaration",
+    "conversion_operator_declaration",
+];
+
+const BRANCH_KINDS: &[&str] = &[
+    "if_statement",
+    "while_statement",
+    "do_statement",
+    "for_statement",
+    "for_each_statement",
+    "case_switch_label",
+    "catch_clause",
+    "conditional_expression",
+    "when_clause",
+];
+
+/// Compute per-type metrics from its tree-sitter subtree.
+fn compute_metrics(node: tree_sitter::Node<'_>) -> TypeMetrics {
+    let loc = node
+        .end_position()
+        .row
+        .saturating_sub(node.start_position().row)
+        + 1;
+    let mut members: u32 = 0;
+    let mut complexity: u32 = 0;
+
+    // Direct members: children of the body node (usually `declaration_list`).
+    if let Some(body) = node.child_by_field_name("body") {
+        let mut bc = body.walk();
+        for child in body.named_children(&mut bc) {
+            if MEMBER_KINDS.contains(&child.kind()) {
+                members += 1;
+            }
+        }
+    } else {
+        // Some grammars expose the body as a direct `declaration_list` child.
+        let mut tc = node.walk();
+        for child in node.named_children(&mut tc) {
+            if child.kind() == "declaration_list" {
+                let mut bc = child.walk();
+                for m in child.named_children(&mut bc) {
+                    if MEMBER_KINDS.contains(&m.kind()) {
+                        members += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Cyclomatic: descend into the type's subtree and tally branch nodes.
+    // `walk` starts positioned on the type node itself, so we iterate its
+    // children to avoid walking the type node's siblings.
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        count_branches_siblings(&mut cursor, &mut complexity);
+    }
+
+    TypeMetrics {
+        loc: loc as u32,
+        members,
+        complexity,
+    }
+}
+
+fn count_branches_siblings(cursor: &mut TreeCursor<'_>, out: &mut u32) {
+    loop {
+        if BRANCH_KINDS.contains(&cursor.node().kind()) {
+            *out = out.saturating_add(1);
+        }
+        if cursor.goto_first_child() {
+            count_branches_siblings(cursor, out);
+            cursor.goto_parent();
+        }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
+    }
 }
 
 fn type_kind_for(node_kind: &str) -> Option<TypeKind> {
@@ -252,6 +352,7 @@ fn visit(
                             format!("{prefix}.{name}")
                         };
                         out.types.push((type_kind, full.clone()));
+                        out.metrics.push((full.clone(), compute_metrics(node)));
                         ty_stack.push(full);
                         pushed_ty = true;
                     }
@@ -352,6 +453,45 @@ public class Gadget {}
         assert_eq!(d.namespaces, vec!["Acme.Widgets"]);
         assert!(has(&d, TypeKind::Class, "Acme.Widgets.Widget"));
         assert!(has(&d, TypeKind::Class, "Acme.Widgets.Gadget"));
+    }
+
+    #[test]
+    fn computes_type_metrics() {
+        let src = r#"
+namespace N {
+    public class A {
+        public int F;
+        public void M(int x) {
+            if (x > 0) {
+                for (int i = 0; i < x; i++) {
+                    if (i == 3) { }
+                }
+            } else {
+                while (x < 0) { x++; }
+            }
+            try { } catch { }
+            var y = x > 0 ? 1 : 2;
+        }
+        private class Inner {}
+    }
+}
+"#;
+        let d = extract_decls(src).unwrap();
+        let a = d
+            .metrics
+            .iter()
+            .find(|(n, _)| n == "N.A")
+            .expect("N.A metrics");
+        let m = a.1;
+        // One field + one method = 2 direct members (nested type isn't counted).
+        assert_eq!(m.members, 2);
+        // 2 if, 1 for, 1 while, 1 catch, 1 ternary = 6.
+        assert_eq!(m.complexity, 6);
+        assert!(m.loc >= 15);
+        // Inner type is tracked separately with its own (zero) metrics.
+        let inner = d.metrics.iter().find(|(n, _)| n == "N.A.Inner").unwrap();
+        assert_eq!(inner.1.members, 0);
+        assert_eq!(inner.1.complexity, 0);
     }
 
     #[test]
