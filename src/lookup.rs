@@ -8,6 +8,7 @@
 //! Accepts either a simple name (matches every namespace/project declaring
 //! that name) or a fully-qualified name (exact match).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -21,6 +22,11 @@ pub struct LookupResult {
     pub matches: Vec<Match>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ambiguous_in: Vec<String>,
+    /// Types whose `base_list` names the query. Grouped by declaring
+    /// project. Drawn from `metrics.yaml`, which is the only artifact that
+    /// records per-type base lists.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub subclasses: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -144,10 +150,55 @@ pub fn run(atlas_dir: &Path, query: &str) -> Result<LookupResult> {
     ambiguous_in.sort();
     ambiguous_in.dedup();
 
+    // Subclasses: scan metrics.yaml for any type whose `bases` list contains
+    // the query's simple name. Only works when metrics.yaml is present —
+    // classes.yaml doesn't carry base lists.
+    let mut subclasses: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    if let Some(metrics) = &metrics_doc {
+        for project in projects_of(metrics) {
+            let pname = string_at(project, "name").unwrap_or_default();
+            let Some(namespaces) = project.get("namespaces").and_then(Value::as_mapping) else {
+                continue;
+            };
+            for (ns_key, kinds) in namespaces {
+                let ns = ns_key.as_str().unwrap_or("").to_string();
+                let Some(kinds_map) = kinds.as_mapping() else {
+                    continue;
+                };
+                for (_kind, entries) in kinds_map {
+                    let Some(map) = entries.as_mapping() else {
+                        continue;
+                    };
+                    for (local_key, body) in map {
+                        let Some(local) = local_key.as_str() else {
+                            continue;
+                        };
+                        let Some(bases) = body.get("bases").and_then(Value::as_sequence) else {
+                            continue;
+                        };
+                        if bases.iter().any(|b| b.as_str() == Some(&simple)) {
+                            let fqn = if ns == "<global>" || ns.is_empty() {
+                                local.to_string()
+                            } else {
+                                format!("{ns}.{local}")
+                            };
+                            subclasses.entry(pname.clone()).or_default().push(fqn);
+                        }
+                    }
+                }
+            }
+        }
+        for names in subclasses.values_mut() {
+            names.sort();
+            names.dedup();
+        }
+    }
+
     Ok(LookupResult {
         query: query.to_string(),
         matches,
         ambiguous_in,
+        subclasses,
     })
 }
 

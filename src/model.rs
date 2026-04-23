@@ -20,6 +20,11 @@ pub struct TypeMetrics {
     /// and types with no method-shaped members.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<MethodMetric>,
+    /// Simple names from the type's `base_list` — base class and implemented
+    /// interfaces merged, in source order. Empty when the type has no base
+    /// list. Names are not disambiguated against the cross-project catalog.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bases: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]

@@ -114,6 +114,13 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
                         slot.members = slot.members.saturating_add(m.members);
                         slot.complexity = slot.complexity.saturating_add(m.complexity);
                         slot.methods.extend(m.methods);
+                        // Partial-class base lists may appear on any of the
+                        // partial fragments; merge uniquely preserving order.
+                        for b in m.bases {
+                            if !slot.bases.contains(&b) {
+                                slot.bases.push(b);
+                            }
+                        }
                     }
                     scan.source_files.push(path.to_path_buf());
                 }
@@ -269,11 +276,25 @@ fn compute_metrics(node: tree_sitter::Node<'_>, src: &[u8]) -> TypeMetrics {
         count_branches_siblings(&mut cursor, &mut complexity);
     }
 
+    // Base class + implemented interfaces (simple names, in source order).
+    let mut bases: Vec<String> = Vec::new();
+    let mut tc = node.walk();
+    for child in node.named_children(&mut tc) {
+        if child.kind() == "base_list" {
+            let mut bc = child.walk();
+            for b in child.named_children(&mut bc) {
+                collect_type_names(b, src, &mut bases);
+            }
+            break;
+        }
+    }
+
     TypeMetrics {
         loc: loc as u32,
         members,
         complexity,
         methods,
+        bases,
     }
 }
 
