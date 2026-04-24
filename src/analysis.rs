@@ -33,6 +33,95 @@ pub enum Finding {
     },
 }
 
+/// Grouped view of `Vec<Finding>` for `checks.yaml` / `atlas.findings` —
+/// collapses the repetitive `kind:` tag by bucketing each variant into its
+/// own field. Empty sections are omitted.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ChecksReport {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cycles: Vec<Vec<String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub orphan_projects: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_project_refs: Vec<UnresolvedRefEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub version_conflicts: Vec<VersionConflictEntry>,
+    /// `{project: [package, ...]}`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub unused_package_refs: BTreeMap<String, Vec<String>>,
+    /// `{project: [namespace, ...]}`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub undeclared_usages: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UnresolvedRefEntry {
+    pub project: String,
+    pub target: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VersionConflictEntry {
+    pub package: String,
+    pub versions: Vec<(String, String)>,
+}
+
+impl ChecksReport {
+    pub fn from_findings(findings: &[Finding]) -> Self {
+        let mut out = ChecksReport::default();
+        for f in findings {
+            match f {
+                Finding::Cycle { projects } => out.cycles.push(projects.clone()),
+                Finding::OrphanProject { project } => out.orphan_projects.push(project.clone()),
+                Finding::UnresolvedProjectRef { project, target } => {
+                    out.unresolved_project_refs.push(UnresolvedRefEntry {
+                        project: project.clone(),
+                        target: target.clone(),
+                    })
+                }
+                Finding::VersionConflict { package, versions } => {
+                    out.version_conflicts.push(VersionConflictEntry {
+                        package: package.clone(),
+                        versions: versions.clone(),
+                    })
+                }
+                Finding::UnusedPackageRef { project, package } => {
+                    out.unused_package_refs
+                        .entry(project.clone())
+                        .or_default()
+                        .push(package.clone());
+                }
+                Finding::UndeclaredUsage { project, namespace } => {
+                    out.undeclared_usages
+                        .entry(project.clone())
+                        .or_default()
+                        .push(namespace.clone());
+                }
+            }
+        }
+        out.orphan_projects.sort();
+        out.orphan_projects.dedup();
+        for v in out.unused_package_refs.values_mut() {
+            v.sort();
+            v.dedup();
+        }
+        for v in out.undeclared_usages.values_mut() {
+            v.sort();
+            v.dedup();
+        }
+        out
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cycles.is_empty()
+            && self.orphan_projects.is_empty()
+            && self.unresolved_project_refs.is_empty()
+            && self.version_conflicts.is_empty()
+            && self.unused_package_refs.is_empty()
+            && self.undeclared_usages.is_empty()
+    }
+}
+
 impl Finding {
     pub fn severity(&self) -> Severity {
         match self {

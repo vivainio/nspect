@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use petgraph::visit::EdgeRef;
 use serde::Serialize;
 
-use crate::analysis::{analyze, Finding};
+use crate::analysis::{analyze, ChecksReport};
 use crate::graph::{EdgeKind, Node, ProjectGraph, UnresolvedRef};
 use crate::model::{Project, ProjectId};
 
@@ -33,10 +33,10 @@ pub struct Atlas {
     pub cycles: Vec<Vec<String>>,
     pub orphans: Vec<String>,
     pub unresolved: Vec<UnresolvedEntry>,
-    /// Populated when `AtlasOptions::check` is set. Empty otherwise and omitted
-    /// from the serialized output.
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub findings: Vec<Finding>,
+    /// Populated when `AtlasOptions::check` is set. Empty otherwise and
+    /// omitted from the serialized output.
+    #[serde(skip_serializing_if = "ChecksReport::is_empty", default)]
+    pub findings: ChecksReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -241,7 +241,11 @@ pub fn build(projects: Vec<Project>, scan_root: &Path, opts: AtlasOptions) -> At
         })
         .collect();
 
-    let findings = if opts.check { analyze(&g) } else { Vec::new() };
+    let findings = if opts.check {
+        ChecksReport::from_findings(&analyze(&g))
+    } else {
+        ChecksReport::default()
+    };
 
     Atlas {
         root,

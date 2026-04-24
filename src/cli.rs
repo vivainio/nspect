@@ -525,12 +525,17 @@ fn artifact_header(kind: &str, format: AtlasFormat) -> &'static str {
         }
         "checks" => {
             "\
-# checks.yaml — findings from `atlas --check`.
+# checks.yaml — findings from `atlas --check`, bucketed by kind.
 #
-# Each entry is a Finding variant: cycles, orphans, unresolved project
-# refs, unused/undeclared package references, and package version
-# conflicts across the solution. Shape mirrors the Rust enum with a
-# `kind` tag; payload fields vary per variant.
+# Top-level keys (each omitted when empty):
+#   cycles                   [[project, ...], ...]  project-ref cycles.
+#   orphan_projects          [project, ...]         no dependents, no deps.
+#   unresolved_project_refs  [{project, target}]    dangling csproj refs.
+#   version_conflicts        [{package, versions: [[project, version]]}]
+#   unused_package_refs      {project: [package, ...]}   declared but unseen
+#                                                        in source `using`s.
+#   undeclared_usages        {project: [namespace, ...]} used in source but
+#                                                        no declared source.
 "
         }
         "references" => {
