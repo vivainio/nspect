@@ -58,6 +58,7 @@ pub fn run_init(args: InitArgs) -> Result<()> {
     std::fs::create_dir_all(&gen_dir).with_context(|| format!("creating {}", gen_dir.display()))?;
     ensure_gitignore(&root)?;
     crate::spec::seed_areas_stub(&root)?;
+    crate::spec::seed_rules_stub(&root)?;
 
     run_atlas(AtlasArgs {
         path: root,
@@ -545,6 +546,8 @@ fn artifact_header(kind: &str, format: AtlasFormat) -> &'static str {
 #                                                        in source `using`s.
 #   undeclared_usages        {project: [namespace, ...]} used in source but
 #                                                        no declared source.
+#   forbidden_area_edges     [{from_project, from_area, to_project, to_area,
+#                              reason}]  project-ref violating `spec/rules.yaml`.
 "
         }
         "references" => {

@@ -267,7 +267,15 @@ pub fn build(projects: Vec<Project>, scan_root: &Path, opts: AtlasOptions) -> At
         .collect();
 
     let findings = if opts.check {
-        ChecksReport::from_findings(&analyze(&g))
+        let mut all = analyze(&g);
+        let rules = crate::spec::RulesSpec::load(&root).unwrap_or_default();
+        let known_areas: std::collections::BTreeSet<String> =
+            area_of.values().cloned().collect();
+        for w in rules.validate(&known_areas) {
+            eprintln!("warning: {w}");
+        }
+        all.extend(crate::analysis::check_area_rules(&g, &area_of, &rules));
+        ChecksReport::from_findings(&all)
     } else {
         ChecksReport::default()
     };

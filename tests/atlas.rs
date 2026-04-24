@@ -174,6 +174,40 @@ fn spec_areas_yaml_overrides_inferred_area() {
     let _ = std::fs::remove_dir_all(&dst);
 }
 
+#[test]
+fn spec_areas_yaml_supports_glob_patterns() {
+    // Reuse the fixture — claim everything under Src/Billing* (glob) for
+    // Commerce, and test/*Widget* (nothing) emits a warning.
+    let src = fixture("atlas");
+    let dst = std::env::temp_dir().join(format!("nspect-spec-glob-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dst);
+    copy_dir(&src, &dst);
+
+    let spec_dir = dst.join(".nspect").join("spec");
+    std::fs::create_dir_all(&spec_dir).unwrap();
+    std::fs::write(
+        spec_dir.join("areas.yaml"),
+        "areas:\n  Commerce:\n    - Src/Billing*\n  Gone:\n    - test/*Widget*\n",
+    )
+    .unwrap();
+
+    let projects = nspect::cli::load_projects(&dst).expect("load");
+    let a = atlas::build(projects, &dst, atlas::AtlasOptions::default());
+    let by_name: std::collections::HashMap<&str, &atlas::AtlasProject> =
+        a.projects.iter().map(|p| (p.name.as_str(), p)).collect();
+
+    // Everything under Src/Billing/* got claimed by the `Src/Billing*` glob.
+    assert_eq!(by_name["Domain"].area, "Commerce");
+    assert_eq!(by_name["Api"].area, "Commerce");
+    assert_eq!(by_name["Ui"].area, "Commerce");
+    assert_eq!(by_name["Domain.Tests"].area, "Commerce");
+    // Common/Legacy untouched.
+    assert_eq!(by_name["Core"].area, "Common");
+    assert_eq!(by_name["Widget"].area, "Legacy");
+
+    let _ = std::fs::remove_dir_all(&dst);
+}
+
 fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
@@ -186,6 +220,46 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
             std::fs::copy(entry.path(), target).unwrap();
         }
     }
+}
+
+#[test]
+fn spec_rules_yaml_flags_forbidden_area_edges() {
+    // Reassign Widget → Commerce via areas.yaml, then forbid Commerce → Common
+    // via rules.yaml. Widget → Core (Common area) should be flagged.
+    let src = fixture("atlas");
+    let dst = std::env::temp_dir().join(format!("nspect-rules-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dst);
+    copy_dir(&src, &dst);
+
+    let spec_dir = dst.join(".nspect").join("spec");
+    std::fs::create_dir_all(&spec_dir).unwrap();
+    std::fs::write(
+        spec_dir.join("areas.yaml"),
+        "areas:\n  Commerce:\n    - Legacy/Widget\n",
+    )
+    .unwrap();
+    std::fs::write(
+        spec_dir.join("rules.yaml"),
+        "rules:\n  - area: Commerce\n    deny: [Common]\n",
+    )
+    .unwrap();
+
+    let projects = nspect::cli::load_projects(&dst).expect("load");
+    let a = atlas::build(projects, &dst, atlas::AtlasOptions { check: true });
+
+    assert_eq!(
+        a.findings.forbidden_area_edges.len(),
+        1,
+        "findings: {:?}",
+        a.findings.forbidden_area_edges
+    );
+    let violation = &a.findings.forbidden_area_edges[0];
+    assert_eq!(violation.from_project, "Widget");
+    assert_eq!(violation.from_area, "Commerce");
+    assert_eq!(violation.to_project, "Core");
+    assert_eq!(violation.to_area, "Common");
+
+    let _ = std::fs::remove_dir_all(&dst);
 }
 
 #[test]

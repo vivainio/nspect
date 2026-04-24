@@ -443,6 +443,7 @@ dependencies = [
  "anyhow",
  "clap",
  "comfy-table",
+ "globset",
  "ignore",
  "insta",
  "owo-colors",

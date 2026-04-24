@@ -31,6 +31,13 @@ pub enum Finding {
         project: String,
         namespace: String,
     },
+    ForbiddenAreaEdge {
+        from_project: String,
+        from_area: String,
+        to_project: String,
+        to_area: String,
+        reason: String,
+    },
 }
 
 /// Grouped view of `Vec<Finding>` for `checks.yaml` / `atlas.findings` —
@@ -52,6 +59,8 @@ pub struct ChecksReport {
     /// `{project: [namespace, ...]}`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub undeclared_usages: BTreeMap<String, Vec<String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub forbidden_area_edges: Vec<ForbiddenAreaEdgeEntry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,6 +73,15 @@ pub struct UnresolvedRefEntry {
 pub struct VersionConflictEntry {
     pub package: String,
     pub versions: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ForbiddenAreaEdgeEntry {
+    pub from_project: String,
+    pub from_area: String,
+    pub to_project: String,
+    pub to_area: String,
+    pub reason: String,
 }
 
 impl ChecksReport {
@@ -97,6 +115,19 @@ impl ChecksReport {
                         .or_default()
                         .push(namespace.clone());
                 }
+                Finding::ForbiddenAreaEdge {
+                    from_project,
+                    from_area,
+                    to_project,
+                    to_area,
+                    reason,
+                } => out.forbidden_area_edges.push(ForbiddenAreaEdgeEntry {
+                    from_project: from_project.clone(),
+                    from_area: from_area.clone(),
+                    to_project: to_project.clone(),
+                    to_area: to_area.clone(),
+                    reason: reason.clone(),
+                }),
             }
         }
         out.orphan_projects.sort();
@@ -119,6 +150,7 @@ impl ChecksReport {
             && self.version_conflicts.is_empty()
             && self.unused_package_refs.is_empty()
             && self.undeclared_usages.is_empty()
+            && self.forbidden_area_edges.is_empty()
     }
 }
 
@@ -130,6 +162,7 @@ impl Finding {
             Finding::UnresolvedProjectRef { .. } => Severity::Warning,
             Finding::UnusedPackageRef { .. } => Severity::Warning,
             Finding::UndeclaredUsage { .. } => Severity::Warning,
+            Finding::ForbiddenAreaEdge { .. } => Severity::Error,
             Finding::OrphanProject { .. } => Severity::Info,
         }
     }
@@ -239,6 +272,87 @@ pub enum Severity {
     Error,
     Warning,
     Info,
+}
+
+/// Walk every project-ref edge and flag the ones that violate `rules`.
+/// `area_of` is keyed by project id.
+pub fn check_area_rules(
+    g: &ProjectGraph,
+    area_of: &std::collections::HashMap<ProjectId, String>,
+    rules: &crate::spec::RulesSpec,
+) -> Vec<Finding> {
+    use petgraph::visit::EdgeRef;
+
+    let mut out = Vec::new();
+    for e in g.graph.edge_references() {
+        if *e.weight() != crate::graph::EdgeKind::ProjectRef {
+            continue;
+        }
+        let (from_id, to_id) = match (&g.graph[e.source()], &g.graph[e.target()]) {
+            (crate::graph::Node::Project(a), crate::graph::Node::Project(b)) => (*a, *b),
+            _ => continue,
+        };
+        let from_area = match area_of.get(&from_id) {
+            Some(a) => a.as_str(),
+            None => continue,
+        };
+        let to_area = match area_of.get(&to_id) {
+            Some(a) => a.as_str(),
+            None => continue,
+        };
+        if from_area == to_area {
+            continue;
+        }
+        let Some(rule) = rules.for_area(from_area) else {
+            continue;
+        };
+        let mut reason: Option<String> = None;
+        if let Some(allow) = &rule.allow {
+            if !allow.iter().any(|a| a == to_area) {
+                reason = Some(if allow.is_empty() {
+                    format!("area `{from_area}` is isolated (allow: [])")
+                } else {
+                    format!(
+                        "area `{from_area}` may only depend on: {}",
+                        allow.join(", ")
+                    )
+                });
+            }
+        }
+        if reason.is_none() {
+            if let Some(deny) = &rule.deny {
+                if deny.iter().any(|a| a == to_area) {
+                    reason = Some(format!("area `{from_area}` denies `{to_area}`"));
+                }
+            }
+        }
+        if let Some(reason) = reason {
+            out.push(Finding::ForbiddenAreaEdge {
+                from_project: g.name(from_id).to_string(),
+                from_area: from_area.to_string(),
+                to_project: g.name(to_id).to_string(),
+                to_area: to_area.to_string(),
+                reason,
+            });
+        }
+    }
+    // Deterministic order for stable artifacts.
+    out.sort_by(|a, b| match (a, b) {
+        (
+            Finding::ForbiddenAreaEdge {
+                from_project: fa,
+                to_project: ta,
+                ..
+            },
+            Finding::ForbiddenAreaEdge {
+                from_project: fb,
+                to_project: tb,
+                ..
+            },
+        ) => (fa, ta).cmp(&(fb, tb)),
+        _ => std::cmp::Ordering::Equal,
+    });
+    out
 }
 
 pub fn analyze(g: &ProjectGraph) -> Vec<Finding> {
@@ -363,6 +477,10 @@ pub fn analyze(g: &ProjectGraph) -> Vec<Finding> {
             }
         }
     }
+
+    // Rule findings are appended by `check_area_rules` in atlas::build,
+    // which has the area assignments; keep this pure package-level pass
+    // focused and skip straight to version conflicts.
 
     for (pkg, versions) in versions_by_pkg {
         if versions.len() <= 1 {

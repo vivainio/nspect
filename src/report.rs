@@ -175,6 +175,17 @@ pub fn findings_text(findings: &[Finding]) -> String {
                     "{tag} undeclared usage: {project} imports `{namespace}`\n"
                 ));
             }
+            Finding::ForbiddenAreaEdge {
+                from_project,
+                from_area,
+                to_project,
+                to_area,
+                reason,
+            } => {
+                out.push_str(&format!(
+                    "{tag} forbidden area edge: {from_project} [{from_area}] → {to_project} [{to_area}] — {reason}\n",
+                ));
+            }
         }
     }
     out
