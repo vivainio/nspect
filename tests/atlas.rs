@@ -135,6 +135,60 @@ fn fan_in_and_fan_out_counts_are_correct() {
 }
 
 #[test]
+fn spec_areas_yaml_overrides_inferred_area() {
+    // Copy the atlas fixture into a tempdir and drop a spec/areas.yaml that
+    // claims the Legacy/Widget tree for Billing and introduces a new
+    // "Platform" area covering Src/Common. Also include a zero-match entry
+    // to verify warnings don't crash the build.
+    let src = fixture("atlas");
+    let dst = std::env::temp_dir().join(format!("nspect-spec-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dst);
+    copy_dir(&src, &dst);
+
+    let spec_dir = dst.join(".nspect").join("spec");
+    std::fs::create_dir_all(&spec_dir).unwrap();
+    std::fs::write(
+        spec_dir.join("areas.yaml"),
+        "areas:\n  Billing:\n    - Legacy/Widget\n  Platform:\n    - Src/Common\n  Ghost:\n    - does/not/exist\n",
+    )
+    .unwrap();
+
+    let projects = nspect::cli::load_projects(&dst).expect("load");
+    let a = atlas::build(projects, &dst, atlas::AtlasOptions::default());
+    let by_name: std::collections::HashMap<&str, &atlas::AtlasProject> =
+        a.projects.iter().map(|p| (p.name.as_str(), p)).collect();
+
+    // Widget was Legacy → now Billing (single-csproj subtree claim).
+    assert_eq!(by_name["Widget"].area, "Billing");
+    // Core/Utils were Common → now Platform (directory claim renames).
+    assert_eq!(by_name["Core"].area, "Platform");
+    assert_eq!(by_name["Utils"].area, "Platform");
+    // Billing-side untouched.
+    assert_eq!(by_name["Domain"].area, "Billing");
+
+    let areas: Vec<&str> = a.areas.iter().map(|ar| ar.name.as_str()).collect();
+    assert!(areas.contains(&"Platform"));
+    assert!(!areas.contains(&"Common"));
+    assert!(!areas.contains(&"Legacy"));
+
+    let _ = std::fs::remove_dir_all(&dst);
+}
+
+fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let ft = entry.file_type().unwrap();
+        let target = dst.join(entry.file_name());
+        if ft.is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+#[test]
 fn paths_are_relative_to_scan_root() {
     let a = build_atlas("atlas");
     for p in &a.projects {

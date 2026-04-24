@@ -106,6 +106,7 @@ pub fn build(projects: Vec<Project>, scan_root: &Path, opts: AtlasOptions) -> At
 
     // Area per project: first path segment of the project's path relative to
     // the scan root, skipping a leading `src` / `source` wrapper if present.
+    // Then apply hand-authored overrides from `.nspect/spec/areas.yaml` (if any).
     let mut area_of: HashMap<ProjectId, String> = HashMap::new();
     let mut area_root_of: HashMap<String, PathBuf> = HashMap::new();
     for id in &project_ids {
@@ -113,6 +114,30 @@ pub fn build(projects: Vec<Project>, scan_root: &Path, opts: AtlasOptions) -> At
         let (area, area_root) = derive_area(&p.path, scan_root);
         area_root_of.entry(area.clone()).or_insert(area_root);
         area_of.insert(*id, area);
+    }
+    let spec = crate::spec::AreasSpec::load(&root).unwrap_or_default();
+    let project_paths: Vec<PathBuf> = project_ids
+        .iter()
+        .map(|id| crate::csproj::canonicalize(&g.projects[id].path))
+        .collect();
+    let (overrides, warnings) = spec.resolve(&root, &project_paths);
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
+    for id in &project_ids {
+        let canon = crate::csproj::canonicalize(&g.projects[id].path);
+        if let Some(new_area) = overrides.get(&canon) {
+            area_of.insert(*id, new_area.clone());
+            // Seed a root for newly-introduced areas using the project's dir
+            // so `Area::root` stays populated. Existing areas keep their root.
+            area_root_of.entry(new_area.clone()).or_insert_with(|| {
+                g.projects[id]
+                    .path
+                    .parent()
+                    .map(PathBuf::from)
+                    .unwrap_or_default()
+            });
+        }
     }
 
     // Fan-in / fan-out over project refs only.

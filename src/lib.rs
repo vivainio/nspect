@@ -14,3 +14,4 @@ pub mod report;
 pub mod signatures;
 pub mod sln;
 pub mod source_scan;
+pub mod spec;

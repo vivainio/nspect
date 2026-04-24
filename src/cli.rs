@@ -36,8 +36,9 @@ pub enum Command {
     /// Report everything the atlas artifacts know about a type (declaring
     /// project, namespace, metrics, cross-project callers).
     Lookup(LookupArgs),
-    /// Create `.nspect/atlas/` in the repo root, add it to `.gitignore`, and
-    /// populate it with a full atlas (`--check --references`).
+    /// Create `.nspect/gen/` in the repo root, add `.nspect/` to
+    /// `.gitignore`, seed `.nspect/spec/areas.yaml`, and populate `gen/`
+    /// with a full atlas (`--check --references`).
     Init(InitArgs),
 }
 
@@ -53,27 +54,27 @@ pub fn run_init(args: InitArgs) -> Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("resolving {}", args.path.display()))?;
-    let atlas_dir = root.join(".nspect").join("atlas");
-    std::fs::create_dir_all(&atlas_dir)
-        .with_context(|| format!("creating {}", atlas_dir.display()))?;
+    let gen_dir = root.join(".nspect").join("gen");
+    std::fs::create_dir_all(&gen_dir).with_context(|| format!("creating {}", gen_dir.display()))?;
     ensure_gitignore(&root)?;
+    crate::spec::seed_areas_stub(&root)?;
 
     run_atlas(AtlasArgs {
         path: root,
         format: AtlasFormat::Yaml,
         compact: false,
-        output_dir: Some(atlas_dir),
+        output_dir: Some(gen_dir),
         check: false,
         references: false,
         full: true,
     })
 }
 
-fn discover_atlas_dir() -> Result<PathBuf> {
+fn discover_gen_dir() -> Result<PathBuf> {
     let start = std::env::current_dir().context("getting current directory")?;
     let mut cur: &std::path::Path = &start;
     loop {
-        let candidate = cur.join(".nspect").join("atlas");
+        let candidate = cur.join(".nspect").join("gen");
         if candidate.is_dir() {
             return Ok(candidate);
         }
@@ -81,7 +82,7 @@ fn discover_atlas_dir() -> Result<PathBuf> {
             Some(p) => cur = p,
             None => {
                 anyhow::bail!(
-                    "no `.nspect/atlas` found walking up from {}. Run `nspect init` at the repo root, or pass --atlas-dir.",
+                    "no `.nspect/gen` found walking up from {}. Run `nspect init` at the repo root, or pass --atlas-dir.",
                     start.display()
                 );
             }
@@ -91,12 +92,20 @@ fn discover_atlas_dir() -> Result<PathBuf> {
 
 fn ensure_gitignore(root: &std::path::Path) -> Result<()> {
     let gi = root.join(".gitignore");
-    let entry = "/.nspect/";
+    let entry = "/.nspect/gen/";
     let existing = std::fs::read_to_string(&gi).unwrap_or_default();
-    if existing
-        .lines()
-        .any(|l| l.trim() == entry || l.trim() == ".nspect/" || l.trim() == ".nspect")
-    {
+    // Skip if gen/ is already ignored — either directly or by a broader
+    // `.nspect/` entry (which also catches spec/, so we leave any such
+    // pre-existing rule alone rather than fighting the user's setup).
+    let already = existing.lines().map(str::trim).any(|l| {
+        l == entry
+            || l == ".nspect/gen/"
+            || l == ".nspect/gen"
+            || l == "/.nspect/"
+            || l == ".nspect/"
+            || l == ".nspect"
+    });
+    if already {
         return Ok(());
     }
     let mut body = existing;
@@ -123,7 +132,7 @@ pub struct LookupArgs {
     pub file: Vec<PathBuf>,
     /// Directory containing `atlas.yaml` / `classes.yaml` / `metrics.yaml` /
     /// `references.yaml`. If omitted, walks up from the current directory
-    /// looking for `.nspect/atlas` (as produced by `nspect init`).
+    /// looking for `.nspect/gen` (as produced by `nspect init`).
     #[arg(long)]
     pub atlas_dir: Option<PathBuf>,
     /// Skip the tree-sitter re-parse that turns method names into full
@@ -139,7 +148,7 @@ pub fn run_lookup(args: LookupArgs) -> Result<()> {
     }
     let atlas_dir = match args.atlas_dir {
         Some(p) => p,
-        None => discover_atlas_dir()?,
+        None => discover_gen_dir()?,
     };
     let opts = lookup::Options {
         signatures: !args.no_sig,

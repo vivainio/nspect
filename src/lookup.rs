@@ -479,10 +479,10 @@ fn format_methods(
 }
 
 fn repo_root_from(atlas_dir: &Path) -> PathBuf {
-    // When atlas_dir is `<root>/.nspect/atlas` (the shape `nspect init`
+    // When atlas_dir is `<root>/.nspect/gen` (the shape `nspect init`
     // writes), pop two levels to reach the repo root. Otherwise fall back to
     // the atlas_dir itself so relative paths still resolve something.
-    if atlas_dir.file_name().map(|n| n == "atlas").unwrap_or(false) {
+    if atlas_dir.file_name().map(|n| n == "gen").unwrap_or(false) {
         if let Some(parent) = atlas_dir.parent() {
             if parent.file_name().map(|n| n == ".nspect").unwrap_or(false) {
                 if let Some(root) = parent.parent() {
