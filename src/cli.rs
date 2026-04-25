@@ -449,6 +449,15 @@ pub fn run_atlas(mut args: AtlasArgs) -> Result<()> {
                     &encode_atlas(refs, args.format, args.compact)?,
                 )?;
             }
+            // Tips only make sense with per-type weights available. Always
+            // write the file (even when empty) so a previous run's stale
+            // suggestions don't linger after they've been addressed.
+            let tips = crate::tips::build(&atlas_model);
+            write_artifact(
+                &dir.join(format!("tips.{ext}")),
+                artifact_header("tips", args.format),
+                &encode_atlas(&tips, args.format, args.compact)?,
+            )?;
         }
     }
     Ok(())
@@ -548,6 +557,21 @@ fn artifact_header(kind: &str, format: AtlasFormat) -> &'static str {
 #                                                        no declared source.
 #   forbidden_area_edges     [{from_project, from_area, to_project, to_area,
 #                              reason}]  project-ref violating `spec/rules.yaml`.
+"
+        }
+        "tips" => {
+            "\
+# tips.yaml — structural suggestions. Non-authoritative; consumed by humans
+# reviewing architecture, not by CI gates.
+#
+# Buckets (each omitted when empty):
+#   merge_candidates    [{project, into, reason, confidence, loc}]
+#                       Projects that look absorbable into their sole consumer.
+#   cluster_candidates  [{projects, consumed_by, total_loc, confidence}]
+#                       Groups of projects sharing the exact same consumer
+#                       set — likely over-decomposition of one logical unit.
+#
+# `confidence` is one of: high, medium, low.
 "
         }
         "references" => {

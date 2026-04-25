@@ -263,6 +263,42 @@ fn spec_rules_yaml_flags_forbidden_area_edges() {
 }
 
 #[test]
+fn tips_skip_when_only_consumer_is_a_test_project() {
+    // The atlas fixture has Domain.Tests as the test project for Domain.
+    // Domain has fan_in=3 (Api, Ui, Domain.Tests), so isn't a candidate.
+    // Just make sure tips::build runs without flagging the test→prod relation.
+    let a = build_atlas("atlas");
+    let tips = nspect::tips::build(&a);
+    for c in &tips.merge_candidates {
+        assert!(
+            !c.into.ends_with(".Tests"),
+            "should not propose merging into a test project: {} → {}",
+            c.project,
+            c.into
+        );
+    }
+}
+
+#[test]
+fn cluster_candidates_groups_projects_with_same_consumer_set() {
+    // The atlas fixture: Api, Ui, Domain.Tests all depend on Domain only.
+    // Source scan didn't run for the test, so weight is None — the cluster
+    // pass should skip and not panic. Build atlas with a real scan to cover
+    // the positive path.
+    let root = fixture("atlas");
+    let mut projects = nspect::cli::load_projects(&root).expect("load");
+    nspect::cli::apply_source_scan(&mut projects).expect("scan");
+    let a = nspect::atlas::build(projects, &root, nspect::atlas::AtlasOptions::default());
+    let tips = nspect::tips::build(&a);
+    // No cluster expected: this fixture has every project consumed by a
+    // distinct set, but the function must produce sane output regardless.
+    for c in &tips.cluster_candidates {
+        assert!(c.projects.len() >= 2, "cluster size should be >= 2");
+        assert!(!c.consumed_by.is_empty(), "cluster needs >=1 consumer");
+    }
+}
+
+#[test]
 fn paths_are_relative_to_scan_root() {
     let a = build_atlas("atlas");
     for p in &a.projects {

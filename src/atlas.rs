@@ -294,7 +294,7 @@ pub fn build(projects: Vec<Project>, scan_root: &Path, opts: AtlasOptions) -> At
 
 /// Assign each project a stable, human-readable id derived from its name.
 ///
-/// Strips a dominant dotted prefix (e.g. `Basware.P2P.`) from names that share
+/// Strips a dominant dotted prefix (e.g. `Acme.Foo.`) from names that share
 /// it, provided the stripping doesn't cause collisions with the rest. Then
 /// breaks any remaining duplicate-name collisions with `#2`, `#3` ordinal
 /// suffixes (ordered by csproj path).
@@ -348,7 +348,7 @@ fn pick_strip_prefix(names: &[&str]) -> Option<String> {
         return None;
     }
 
-    // Try prefixes of 3, then 2 dotted segments. 1-segment prefixes ("Basware")
+    // Try prefixes of 3, then 2 dotted segments. 1-segment prefixes ("Acme")
     // strip too aggressively — rarely worth it.
     for seg_count in [3, 2] {
         let mut counts: HashMap<String, usize> = HashMap::new();
@@ -563,7 +563,7 @@ fn compute_layers(g: &ProjectGraph) -> HashMap<ProjectId, u32> {
 /// Matching rules, tried in order:
 /// 1. Exact name match (case-insensitive).
 /// 2. Unique suffix match (project name ends with `query`, case-insensitive).
-///    Handles `OperationContext` → `Basware.P2P.Common.Infrastructure.OperationContext`.
+///    Handles `OperationContext` → `Acme.Foo.Common.Infrastructure.OperationContext`.
 /// 3. Unique substring match (case-insensitive).
 ///
 /// Returns `Err` with the candidate list if the query is ambiguous or unknown.
@@ -887,14 +887,14 @@ mod tests {
         // Use a tempdir so canonicalize works.
         let tmp = tempdir_new();
         let scan_root = tmp.clone();
-        let area_dir = scan_root.join("Src").join("InvoiceAutomation").join("Core");
+        let area_dir = scan_root.join("Src").join("Billing").join("Core");
         std::fs::create_dir_all(&area_dir).unwrap();
         let csproj = area_dir.join("Core.csproj");
         std::fs::write(&csproj, b"<Project/>").unwrap();
         let (area, root) = derive_area(&csproj, &scan_root);
-        assert_eq!(area, "InvoiceAutomation");
+        assert_eq!(area, "Billing");
         assert!(
-            root.ends_with("Src/InvoiceAutomation") || root.ends_with("Src\\InvoiceAutomation")
+            root.ends_with("Src/Billing") || root.ends_with("Src\\Billing")
         );
     }
 

@@ -175,10 +175,10 @@ fn compile_entry(entry: &str) -> Result<(EntryMatcher, usize), String> {
 /// rules:
 ///   - area: Shared
 ///     allow: []              # nothing internal allowed (fully isolated)
-///   - area: DocHub
-///     allow: [Shared, Ingest] # DocHub may only reach these areas (plus self)
-///   - area: ConnectHub
-///     deny: [DocHub]          # targeted prohibition
+///   - area: Billing
+///     allow: [Shared, Ingest] # Billing may only reach these areas (plus self)
+///   - area: Inventory
+///     deny: [Billing]         # targeted prohibition
 /// ```
 ///
 /// Semantics when evaluated per edge `A → B`:
@@ -315,10 +315,10 @@ pub fn seed_rules_stub(repo_root: &Path) -> Result<()> {
 # rules:
 #   - area: Shared
 #     allow: []               # Shared must not depend on anything internal
-#   - area: DocHub
+#   - area: Billing
 #     allow: [Shared, Ingest]
-#   - area: ConnectHub
-#     deny: [DocHub]
+#   - area: Inventory
+#     deny: [Billing]
 
 rules: []
 ";

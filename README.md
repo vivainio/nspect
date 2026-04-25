@@ -63,6 +63,7 @@ With `--output-dir`, the tree-sitter source scan runs and these artifacts are wr
 | `classes.yaml` | Declared types per project, grouped by namespace and bucketed by kind (`class`, `interface`, `struct`, `record`, `record_struct`, `enum`, `delegate`). Nested types keep a dotted local path (e.g. `Outer.Inner`). |
 | `metrics.yaml` | Same shape as `classes.yaml` but values are `{loc, members, complexity, methods}` per type, plus a per-project `totals:` block. |
 | `checks.yaml` | Only written with `--check`. The `findings` list (see below) as a standalone artifact. |
+| `tips.yaml` | Soft architectural suggestions (e.g. `merge_candidates`). Non-authoritative — meant for human review, not CI gates. |
 
 Without `--output-dir`, only the atlas itself is emitted (to stdout) and no source scan is performed — unless `--check` forces it to run the package-ref heuristics.
 
