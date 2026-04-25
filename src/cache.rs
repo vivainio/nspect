@@ -15,7 +15,7 @@ use crate::source_scan::FileDecls;
 
 /// Bump whenever `FileDecls` (or anything it transitively encodes) changes
 /// shape. A mismatch causes the cache to be discarded on load.
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 3;
 
 /// Magic bytes to spot truncated / wrong-format files cheaply.
 const CACHE_MAGIC: [u8; 4] = *b"NSPC";

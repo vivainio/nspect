@@ -55,6 +55,12 @@ pub struct Match {
     pub methods: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub referenced_by: Vec<String>,
+    /// Endpoint classification when this type appears in `endpoints.yaml`
+    /// (WCF contract, Web API controller, SignalR hub, etc.). Stored as a
+    /// passthrough YAML node so the lookup output mirrors whatever shape
+    /// endpoints.yaml ships, without re-parsing each field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<Value>,
 }
 
 /// Output of `run_file`. Lists everything the atlas knows about types
@@ -190,6 +196,7 @@ pub fn run_with(
                         bases: Vec::new(),
                         methods: Vec::new(),
                         referenced_by: Vec::new(),
+                        endpoint: None,
                     };
                     let infos = if let Some(body) = metrics_val.as_ref() {
                         populate_from_metrics(&mut m, body, &files)
@@ -292,12 +299,43 @@ pub fn run_with(
         }
     }
 
+    // Annotate each match with its `endpoints.yaml` entry, when one exists.
+    // Built lazily — only the FQNs we matched against are looked up.
+    let endpoints_doc = load_optional(atlas_dir, "endpoints.yaml")?;
+    if let Some(eps) = &endpoints_doc {
+        let by_fqn = endpoints_index(eps);
+        for m in matches.iter_mut() {
+            if let Some(node) = by_fqn.get(&m.fqn) {
+                m.endpoint = Some((*node).clone());
+            }
+        }
+    }
+
     Ok(LookupResult {
         query: query.to_string(),
         matches,
         ambiguous_in,
         subclasses,
     })
+}
+
+/// Build a `type -> Endpoint` index from a parsed `endpoints.yaml`.
+fn endpoints_index(doc: &Value) -> BTreeMap<String, &Value> {
+    let mut out: BTreeMap<String, &Value> = BTreeMap::new();
+    let Some(projects) = doc.get("projects").and_then(Value::as_sequence) else {
+        return out;
+    };
+    for project in projects {
+        let Some(eps) = project.get("endpoints").and_then(Value::as_sequence) else {
+            continue;
+        };
+        for ep in eps {
+            if let Some(t) = ep.get("type").and_then(Value::as_str) {
+                out.insert(t.to_string(), ep);
+            }
+        }
+    }
+    out
 }
 
 /// List types declared in a source file. Matches by suffix (so the caller
@@ -778,6 +816,79 @@ mod tests {
             fr.matches[0].types,
             vec!["Acme.Domain.Customer L10-80".to_string()]
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lookup_attaches_endpoint_when_present() {
+        let dir = std::env::temp_dir().join(format!("nspect-lookup-ep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("metrics.yaml"),
+            r#"projects:
+- name: Billing
+  path: src/Billing.csproj
+  namespaces:
+    Acme.Billing:
+      interface:
+        IInvoiceService:
+          loc: 14
+          members: 2
+          complexity: 0
+          spans:
+          - f0:8-21
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("endpoints.yaml"),
+            r#"projects:
+- name: Billing
+  path: src/Billing.csproj
+  endpoints:
+  - kind: wcf-contract
+    type: Acme.Billing.IInvoiceService
+    methods: [Submit, Cancel]
+    dtos: [InvoiceDto, OperationResult]
+    users:
+      Acme.Web:
+      - InvoicesController
+"#,
+        )
+        .unwrap();
+
+        let r = run(&dir, "IInvoiceService").unwrap();
+        assert_eq!(r.matches.len(), 1);
+        let ep = r.matches[0].endpoint.as_ref().expect("endpoint attached");
+        assert_eq!(ep.get("kind").and_then(Value::as_str), Some("wcf-contract"));
+        assert_eq!(
+            ep.get("type").and_then(Value::as_str),
+            Some("Acme.Billing.IInvoiceService")
+        );
+        let methods = ep.get("methods").and_then(Value::as_sequence).unwrap();
+        assert_eq!(methods.len(), 2);
+
+        // A type that isn't an endpoint stays endpoint-less.
+        std::fs::write(
+            dir.join("metrics.yaml"),
+            r#"projects:
+- name: Domain
+  path: src/Domain.csproj
+  namespaces:
+    Acme.Domain:
+      class:
+        Helper:
+          loc: 5
+          spans:
+          - f0:1-5
+"#,
+        )
+        .unwrap();
+        let r = run(&dir, "Helper").unwrap();
+        assert_eq!(r.matches.len(), 1);
+        assert!(r.matches[0].endpoint.is_none());
 
         std::fs::remove_dir_all(&dir).ok();
     }

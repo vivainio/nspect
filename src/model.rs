@@ -38,6 +38,13 @@ pub struct TypeMetrics {
     /// plain-scalar safety. Empty when the type has no attributes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attributes: Vec<String>,
+    /// Simple type names referenced anywhere inside this type's body — base
+    /// list, fields, properties, parameters, locals, casts, attributes,
+    /// etc. Deduped, sorted, self-references filtered. This powers the
+    /// cross-index in `endpoints.yaml`: any consumer of an endpoint type
+    /// shows up here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub referenced_types: Vec<String>,
 }
 
 /// One declaration fragment of a type. `file_id` indexes the owning project's
@@ -80,6 +87,12 @@ pub struct MethodMetric {
     /// rules as `TypeMetrics::attributes`. Appended to the serialized
     /// one-liner as ` [A, B]` after the optional `f=<id>` slot.
     pub attributes: Vec<String>,
+    /// Simple type names appearing in this method's signature — every
+    /// parameter's declared type plus the return type. Deduped, sorted,
+    /// predefined types (`int`, `string`, …) excluded. Drives the `dtos:`
+    /// list in `endpoints.yaml`. Not rendered in the method one-liner; sits
+    /// alongside it via a separate channel so the YAML stays terse.
+    pub signature_types: Vec<String>,
 }
 
 impl Serialize for MethodMetric {

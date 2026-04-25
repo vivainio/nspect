@@ -430,6 +430,9 @@ pub fn run_atlas(mut args: AtlasArgs) -> Result<()> {
             } else {
                 None
             };
+            // Build the endpoints snapshot before atlas takes ownership of
+            // `projects`. Same per-type metrics input either way.
+            let endpoints_snapshot = crate::endpoints::build(&projects, &args.path);
             let atlas_model = atlas::build(projects, &args.path, opts);
 
             write_artifact(
@@ -469,6 +472,13 @@ pub fn run_atlas(mut args: AtlasArgs) -> Result<()> {
                 &dir.join(format!("tips.{ext}")),
                 artifact_header("tips", args.format),
                 &encode_atlas(&tips, args.format, args.compact)?,
+            )?;
+            // Endpoints snapshot was built above (before atlas took
+            // ownership of `projects`); write it out alongside the rest.
+            write_artifact(
+                &dir.join(format!("endpoints.{ext}")),
+                artifact_header("endpoints", args.format),
+                &encode_atlas(&endpoints_snapshot, args.format, args.compact)?,
             )?;
         }
     }
@@ -574,6 +584,29 @@ fn artifact_header(kind: &str, format: AtlasFormat) -> &'static str {
 #                                                        no declared source.
 #   forbidden_area_edges     [{from_project, from_area, to_project, to_area,
 #                              reason}]  project-ref violating `spec/rules.yaml`.
+"
+        }
+        "endpoints" => {
+            "\
+# endpoints.yaml — types that expose or consume a remote interface,
+# derived from per-type attributes and base types in metrics.yaml.
+#
+# Per project entry:
+#   endpoints[]  one Endpoint per detected remote-interface type.
+#
+# Endpoint shape:
+#   kind       wcf-contract | wcf-client | webapi-controller | signalr-hub
+#              | remoting
+#   type       fully-qualified type name
+#   route      type-level Route prefix (Web API only)
+#   methods    [Submit, Cancel]                          (WCF / SignalR)
+#              [{name, verb, route?}, ...]               (Web API)
+#   users      { project: [type-local-name, ...], ... }  consumers that
+#              mention this endpoint anywhere in their bodies
+#
+# Projects with no detected endpoints are omitted entirely. gRPC services
+# are not detected today (the `*Base` heuristic is too noisy without proto
+# input).
 "
         }
         "tips" => {

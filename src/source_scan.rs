@@ -193,6 +193,10 @@ pub fn scan_projects_cached(
                                 slot.attributes.push(a);
                             }
                         }
+                        // Per-type referenced names accumulate across
+                        // partial fragments; dedup-and-sort happens once
+                        // after the whole project's files have been folded.
+                        slot.referenced_types.extend(m.referenced_types);
                     }
                     scan.source_files.push(path.to_path_buf());
                 }
@@ -211,6 +215,8 @@ pub fn scan_projects_cached(
                     meth.file_id = None;
                 }
             }
+            m.referenced_types.sort();
+            m.referenced_types.dedup();
         }
 
         // Do NOT sort `scan.source_files` here — spans already reference
@@ -416,6 +422,7 @@ fn compute_metrics(node: tree_sitter::Node<'_>, src: &[u8]) -> TypeMetrics {
         methods,
         bases,
         attributes,
+        referenced_types: Vec::new(),
     }
 }
 
@@ -495,6 +502,7 @@ fn method_metric(node: tree_sitter::Node<'_>, src: &[u8]) -> crate::model::Metho
         count_branches_siblings(&mut cursor, &mut complexity);
     }
     let attributes = collect_attributes(node, src);
+    let signature_types = collect_signature_types(node, src);
     crate::model::MethodMetric {
         name,
         line_start,
@@ -503,7 +511,40 @@ fn method_metric(node: tree_sitter::Node<'_>, src: &[u8]) -> crate::model::Metho
         complexity,
         file_id: None, // stamped by `extract_decls_file`
         attributes,
+        signature_types,
     }
+}
+
+/// Pull every simple type name out of a method's signature: each parameter's
+/// declared type plus the method's return type. Sorted, deduped. Predefined
+/// types (`int`, `string`, …) are filtered by `collect_type_names` already.
+fn collect_signature_types(node: tree_sitter::Node<'_>, src: &[u8]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(ret) = node
+        .child_by_field_name("returns")
+        .or_else(|| node.child_by_field_name("return_type"))
+        .or_else(|| node.child_by_field_name("type"))
+    {
+        collect_type_names(ret, src, &mut out);
+    }
+    let mut tc = node.walk();
+    for child in node.named_children(&mut tc) {
+        if child.kind() != "parameter_list" {
+            continue;
+        }
+        let mut pc = child.walk();
+        for param in child.named_children(&mut pc) {
+            if param.kind() != "parameter" {
+                continue;
+            }
+            if let Some(t) = param.child_by_field_name("type") {
+                collect_type_names(t, src, &mut out);
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn count_branches_siblings(cursor: &mut TreeCursor<'_>, out: &mut u32) {
@@ -517,6 +558,44 @@ fn count_branches_siblings(cursor: &mut TreeCursor<'_>, out: &mut u32) {
         }
         if !cursor.goto_next_sibling() {
             break;
+        }
+    }
+}
+
+/// Push every simple type name found under `node` into both the project-wide
+/// references bag and the innermost enclosing type's `referenced_types`.
+/// Self-references (a type referencing itself by simple name) are filtered
+/// out so consumer-graphs stay clean.
+fn record_refs(
+    node: tree_sitter::Node<'_>,
+    src: &[u8],
+    ty_stack: &[String],
+    out: &mut FileDecls,
+) {
+    let mut buf: Vec<String> = Vec::new();
+    collect_type_names(node, src, &mut buf);
+    if buf.is_empty() {
+        return;
+    }
+    let enclosing_fqn = ty_stack.last().cloned();
+    let enclosing_simple = enclosing_fqn
+        .as_ref()
+        .and_then(|f| f.rsplit('.').next())
+        .map(str::to_string);
+
+    for r in buf {
+        out.references.push(r.clone());
+        if let (Some(fqn), Some(simple)) = (&enclosing_fqn, &enclosing_simple) {
+            if &r == simple {
+                continue;
+            }
+            // The enclosing type's metrics entry was pushed when its
+            // declaration was first visited, so it must already exist by
+            // the time we see references inside its body. Search from the
+            // end since recently-declared types are most likely current.
+            if let Some((_, m)) = out.metrics.iter_mut().rfind(|(n, _)| n == fqn) {
+                m.referenced_types.push(r);
+            }
         }
     }
 }
@@ -681,16 +760,16 @@ fn visit(
                         .or_else(|| node.child_by_field_name("returns"))
                         .or_else(|| node.child_by_field_name("return_type"))
                     {
-                        collect_type_names(t, src, &mut out.references);
+                        record_refs(t, src, ty_stack, out);
                     }
                 } else if other == "base_list" {
                     let mut bc = node.walk();
                     for child in node.named_children(&mut bc) {
-                        collect_type_names(child, src, &mut out.references);
+                        record_refs(child, src, ty_stack, out);
                     }
                 } else if other == "attribute" {
                     if let Some(name) = node.child_by_field_name("name") {
-                        collect_type_names(name, src, &mut out.references);
+                        record_refs(name, src, ty_stack, out);
                     }
                 }
 
@@ -953,6 +1032,7 @@ namespace N {
             complexity: 2,
             file_id: None,
             attributes: vec!["HttpGet".to_string(), "Route('{id}')".to_string()],
+            signature_types: vec![],
         };
         let s = serde_yaml::to_string(&m).unwrap();
         assert!(

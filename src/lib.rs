@@ -6,6 +6,7 @@ pub mod cli;
 pub mod cpm;
 pub mod csproj;
 pub mod discovery;
+pub mod endpoints;
 pub mod graph;
 pub mod lookup;
 pub mod metrics;
