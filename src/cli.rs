@@ -93,30 +93,42 @@ fn discover_gen_dir() -> Result<PathBuf> {
 
 fn ensure_gitignore(root: &std::path::Path) -> Result<()> {
     let gi = root.join(".gitignore");
-    let entry = "/.nspect/gen/";
+    // Both `gen/` (artifacts) and `cache/` (incremental tree-sitter cache)
+    // are derived; only `spec/` is hand-authored and committed.
+    let want = ["/.nspect/gen/", "/.nspect/cache/"];
     let existing = std::fs::read_to_string(&gi).unwrap_or_default();
-    // Skip if gen/ is already ignored — either directly or by a broader
-    // `.nspect/` entry (which also catches spec/, so we leave any such
-    // pre-existing rule alone rather than fighting the user's setup).
-    let already = existing.lines().map(str::trim).any(|l| {
-        l == entry
-            || l == ".nspect/gen/"
-            || l == ".nspect/gen"
-            || l == "/.nspect/"
-            || l == ".nspect/"
-            || l == ".nspect"
-    });
-    if already {
+    let lines: Vec<&str> = existing.lines().map(str::trim).collect();
+    let covers_all = lines
+        .iter()
+        .any(|l| matches!(*l, "/.nspect/" | ".nspect/" | ".nspect"));
+    if covers_all {
+        return Ok(());
+    }
+    let to_add: Vec<&str> = want
+        .iter()
+        .copied()
+        .filter(|entry| {
+            // Already ignored by an exact-match rule (with or without trailing
+            // slash, with or without leading slash).
+            let stem = entry.trim_start_matches('/').trim_end_matches('/');
+            !lines
+                .iter()
+                .any(|l| l == entry || l.trim_matches('/') == stem)
+        })
+        .collect();
+    if to_add.is_empty() {
         return Ok(());
     }
     let mut body = existing;
     if !body.is_empty() && !body.ends_with('\n') {
         body.push('\n');
     }
-    body.push_str(entry);
-    body.push('\n');
+    for entry in &to_add {
+        body.push_str(entry);
+        body.push('\n');
+    }
     std::fs::write(&gi, body).with_context(|| format!("writing {}", gi.display()))?;
-    eprintln!("added {entry} to {}", gi.display());
+    eprintln!("added {} to {}", to_add.join(", "), gi.display());
     Ok(())
 }
 
@@ -259,7 +271,7 @@ pub struct MetricsArgs {
 
 pub fn run_metrics(args: MetricsArgs) -> Result<()> {
     let mut projects = load_projects(&args.path)?;
-    apply_source_scan(&mut projects)?;
+    apply_source_scan_with_cache(&mut projects, Some(&args.path))?;
 
     let mut rows: Vec<(String, metrics::ProjectTotals)> = projects
         .iter()
@@ -392,7 +404,7 @@ pub fn run_atlas(mut args: AtlasArgs) -> Result<()> {
     // (output-dir case), for the package-ref findings inside `--check`, and
     // for the references resolution.
     if args.output_dir.is_some() || args.check || args.references {
-        apply_source_scan(&mut projects)?;
+        apply_source_scan_with_cache(&mut projects, Some(&args.path))?;
     }
 
     match &args.output_dir {
@@ -535,11 +547,16 @@ fn artifact_header(kind: &str, format: AtlasFormat) -> &'static str {
 #
 # Compact string encodings (parse them back via `nspect lookup`):
 #   spans:    f<file_id>:<line_start>-<line_end>           (one per partial)
-#   methods:  <name> L<line_start>-<line_end> loc=<N> cx=<N> [f=<id>]
+#   methods:  <name> L<line_start>-<line_end> loc=<N> cx=<N> [f=<id>] [A,B,..]
 #             Trailing `f=<id>` only appears on methods of partial classes
-#             whose file differs from the type's primary (first) span.
+#             whose file differs from the type's primary (first) span. The
+#             `[A,B,..]` slot carries method attributes when present
+#             (e.g. `[HttpGet, Route('{id}')]`).
 #
 # `bases:` is the simple names from the type's base list (class + ifaces).
+# `attributes:` is the list of attributes applied to the type, with the
+# `Attribute` suffix stripped and arguments rendered as `Name(args)` (C#
+# `\"` rewritten to `'` to keep the YAML plain-scalar-safe).
 "
         }
         "checks" => {
@@ -813,7 +830,7 @@ pub struct ScanArgs {
 pub fn run_scan(args: ScanArgs) -> Result<()> {
     let mut projects = load_projects(&args.path)?;
     if args.source_scan {
-        apply_source_scan(&mut projects)?;
+        apply_source_scan_with_cache(&mut projects, Some(&args.path))?;
     }
     let out = match args.format {
         OutputFormat::Text => report::scan_text(&projects),
@@ -925,7 +942,17 @@ pub fn resolve_assembly_refs(projects: &mut [Project]) {
 
 /// Run source scan (tree-sitter) over each project and attach the discovered usings.
 pub fn apply_source_scan(projects: &mut [Project]) -> Result<()> {
-    let scans = source_scan::scan_projects(projects)?;
+    apply_source_scan_with_cache(projects, None)
+}
+
+/// Same as `apply_source_scan`, but uses an on-disk cache file. Pass the
+/// scan root to enable the default `<root>/.nspect/cache/source_scan.bin`.
+pub fn apply_source_scan_with_cache(
+    projects: &mut [Project],
+    scan_root: Option<&std::path::Path>,
+) -> Result<()> {
+    let cache_path = scan_root.map(crate::cache::default_path);
+    let scans = source_scan::scan_projects_cached(projects, cache_path.as_deref())?;
     for (p, s) in projects.iter_mut().zip(scans) {
         p.usings = s.usings;
         p.declared_namespaces = s.declared_namespaces;

@@ -32,7 +32,7 @@ pub struct SourceScan {
 }
 
 /// Per-file extraction output.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, bincode::Encode, bincode::Decode)]
 pub struct FileDecls {
     pub usings: Vec<String>,
     pub namespaces: Vec<String>,
@@ -45,10 +45,29 @@ pub struct FileDecls {
 /// Scan `.cs` files under each project. Files inside a nested project's
 /// directory are attributed to that nested project only.
 pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceScan>> {
+    scan_projects_cached(projects, None)
+}
+
+/// Same as `scan_projects`, but consults / updates an on-disk cache of
+/// per-file `FileDecls` keyed by absolute path + (mtime_ns, len). Cache
+/// hits skip the tree-sitter parse entirely. The cache is rewritten in
+/// place on success — stale entries (paths no longer scanned) are evicted.
+pub fn scan_projects_cached(
+    projects: &[crate::model::Project],
+    cache_path: Option<&Path>,
+) -> Result<Vec<SourceScan>> {
     let dirs: Vec<PathBuf> = projects
         .iter()
         .map(|p| p.path.parent().map(Path::to_path_buf).unwrap_or_default())
         .collect();
+
+    let mut cache = match cache_path {
+        Some(p) => crate::cache::load(p),
+        None => crate::cache::Cache::default(),
+    };
+    let mut live_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut hits: u64 = 0;
+    let mut misses: u64 = 0;
 
     let mut out = Vec::with_capacity(projects.len());
     for (i, project) in projects.iter().enumerate() {
@@ -112,7 +131,32 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
             // Reserve the file_id *before* parsing so spans stamped during
             // this file's extraction match its eventual index in source_files.
             let file_id = scan.source_files.len() as u32;
-            match extract_decls_file(path, file_id) {
+            let key = path.to_string_lossy().into_owned();
+            live_keys.insert(key.clone());
+            let stamp = crate::cache::stamp(path);
+            let cached: Option<FileDecls> = match stamp {
+                Some((m, l)) => cache.get(&key, m, l).cloned(),
+                None => None,
+            };
+            let parse_result: Result<FileDecls> = if let Some(d) = cached {
+                hits += 1;
+                Ok(d)
+            } else {
+                misses += 1;
+                match extract_decls_unstamped(path) {
+                    Ok(d) => {
+                        if let Some((m, l)) = stamp {
+                            cache.insert(key.clone(), m, l, d.clone());
+                        }
+                        Ok(d)
+                    }
+                    Err(e) => Err(e),
+                }
+            };
+            match parse_result.map(|mut d| {
+                stamp_file_id(&mut d, file_id);
+                d
+            }) {
                 Ok(found) => {
                     for u in found.usings {
                         usings.insert(u);
@@ -139,6 +183,14 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
                         for b in m.bases {
                             if !slot.bases.contains(&b) {
                                 slot.bases.push(b);
+                            }
+                        }
+                        // Same for attributes — a partial fragment may carry
+                        // its own. Keep duplicates filtered so the rendered
+                        // list is faithful to the user-visible decoration.
+                        for a in m.attributes {
+                            if !slot.attributes.contains(&a) {
+                                slot.attributes.push(a);
                             }
                         }
                     }
@@ -183,6 +235,19 @@ pub fn scan_projects(projects: &[crate::model::Project]) -> Result<Vec<SourceSca
         );
         out.push(scan);
     }
+
+    if let Some(p) = cache_path {
+        cache.retain_keys(&live_keys);
+        if let Err(e) = crate::cache::save(p, &cache) {
+            tracing::warn!("failed to write source-scan cache to {}: {e}", p.display());
+        }
+        tracing::debug!(
+            "source-scan cache: {} hits, {} misses, {} live entries",
+            hits,
+            misses,
+            cache.len()
+        );
+    }
     Ok(out)
 }
 
@@ -197,11 +262,18 @@ fn is_build_output(path: &Path) -> bool {
     false
 }
 
-fn extract_decls_file(path: &Path, file_id: u32) -> Result<FileDecls> {
+/// Read + parse a file and produce its `FileDecls` with `file_id` left at
+/// its default (0). The caller stamps the real `file_id` once it knows the
+/// scan-position index — this lets the cache store a single, scan-order-
+/// independent copy of the parse output.
+fn extract_decls_unstamped(path: &Path) -> Result<FileDecls> {
     let src =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let mut decls = extract_decls(&src)?;
-    // Stamp file_id on every span / method extracted from this file.
+    extract_decls(&src)
+}
+
+/// Overwrite every span / method's `file_id` with the supplied scan index.
+fn stamp_file_id(decls: &mut FileDecls, file_id: u32) {
     for (_, m) in decls.metrics.iter_mut() {
         for sp in &mut m.spans {
             sp.file_id = file_id;
@@ -210,7 +282,6 @@ fn extract_decls_file(path: &Path, file_id: u32) -> Result<FileDecls> {
             meth.file_id = Some(file_id);
         }
     }
-    Ok(decls)
 }
 
 /// Back-compat: extract only `using` targets. Used by the CLI's ast-dump.
@@ -331,6 +402,8 @@ fn compute_metrics(node: tree_sitter::Node<'_>, src: &[u8]) -> TypeMetrics {
         }
     }
 
+    let attributes = collect_attributes(node, src);
+
     TypeMetrics {
         loc,
         members,
@@ -342,7 +415,69 @@ fn compute_metrics(node: tree_sitter::Node<'_>, src: &[u8]) -> TypeMetrics {
         }],
         methods,
         bases,
+        attributes,
     }
+}
+
+/// Collect attribute usages applied to a declaration node (type or method).
+/// Each `attribute_list` child holds one or more `attribute`s; we capture
+/// each as `Name` or `Name(args)`, with the trailing `Attribute` suffix
+/// stripped and any C# string `"` rewritten to `'` for YAML plain-scalar
+/// safety. Qualified attribute names (`ns.X.ServiceContract`) collapse to
+/// the last segment.
+fn collect_attributes(node: tree_sitter::Node<'_>, src: &[u8]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut tc = node.walk();
+    for child in node.named_children(&mut tc) {
+        if child.kind() != "attribute_list" {
+            continue;
+        }
+        let mut ac = child.walk();
+        for attr in child.named_children(&mut ac) {
+            if attr.kind() != "attribute" {
+                continue;
+            }
+            let name_text = attr
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(src).ok())
+                .unwrap_or("");
+            let last = name_text.rsplit('.').next().unwrap_or(name_text);
+            let bare = last.strip_suffix("Attribute").unwrap_or(last);
+            if bare.is_empty() {
+                continue;
+            }
+
+            // Locate the attribute's argument list, if any. Tree-sitter
+            // c-sharp exposes it as `attribute_argument_list`.
+            let mut bc = attr.walk();
+            let mut args: Option<String> = None;
+            for c in attr.named_children(&mut bc) {
+                if c.kind() == "attribute_argument_list" {
+                    if let Ok(t) = c.utf8_text(src) {
+                        let trimmed = t.trim();
+                        let inner = trimmed
+                            .strip_prefix('(')
+                            .and_then(|s| s.strip_suffix(')'))
+                            .unwrap_or(trimmed);
+                        let cleaned = inner.replace('"', "'");
+                        // Compact internal whitespace and newlines so the
+                        // method one-liner doesn't grow vertically when an
+                        // attribute argument spans lines.
+                        let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+                        if !cleaned.is_empty() {
+                            args = Some(cleaned);
+                        }
+                    }
+                    break;
+                }
+            }
+            out.push(match args {
+                Some(a) => format!("{bare}({a})"),
+                None => bare.to_string(),
+            });
+        }
+    }
+    out
 }
 
 fn method_metric(node: tree_sitter::Node<'_>, src: &[u8]) -> crate::model::MethodMetric {
@@ -359,6 +494,7 @@ fn method_metric(node: tree_sitter::Node<'_>, src: &[u8]) -> crate::model::Metho
     if cursor.goto_first_child() {
         count_branches_siblings(&mut cursor, &mut complexity);
     }
+    let attributes = collect_attributes(node, src);
     crate::model::MethodMetric {
         name,
         line_start,
@@ -366,6 +502,7 @@ fn method_metric(node: tree_sitter::Node<'_>, src: &[u8]) -> crate::model::Metho
         loc,
         complexity,
         file_id: None, // stamped by `extract_decls_file`
+        attributes,
     }
 }
 
@@ -715,6 +852,113 @@ namespace N {
         let inner = d.metrics.iter().find(|(n, _)| n == "N.A.Inner").unwrap();
         assert_eq!(inner.1.members, 0);
         assert_eq!(inner.1.complexity, 0);
+    }
+
+    #[test]
+    fn extracts_type_and_method_attributes() {
+        let src = r#"
+namespace Acme.Billing {
+    [ServiceContract]
+    public interface IInvoiceService {
+        [OperationContract]
+        void Submit(int id);
+
+        [OperationContract(IsOneWay = true)]
+        void FireAndForget();
+
+        void NotExposed();
+    }
+
+    [ApiController]
+    [Route("api/invoices")]
+    public class InvoicesController {
+        [HttpGet, Authorize(Roles = "admin")]
+        public void List() {}
+    }
+}
+"#;
+        let d = extract_decls(src).unwrap();
+
+        let svc = d
+            .metrics
+            .iter()
+            .find(|(n, _)| n == "Acme.Billing.IInvoiceService")
+            .expect("contract metrics");
+        // `Attribute` suffix is implicit here, but suffix-strip should still
+        // be a no-op when the source already wrote the bare name.
+        assert_eq!(svc.1.attributes, vec!["ServiceContract".to_string()]);
+        let by_name: std::collections::HashMap<&str, &crate::model::MethodMetric> = svc
+            .1
+            .methods
+            .iter()
+            .map(|m| (m.name.as_str(), m))
+            .collect();
+        assert_eq!(
+            by_name["Submit"].attributes,
+            vec!["OperationContract".to_string()]
+        );
+        assert_eq!(
+            by_name["FireAndForget"].attributes,
+            vec!["OperationContract(IsOneWay = true)".to_string()]
+        );
+        assert!(by_name["NotExposed"].attributes.is_empty());
+
+        let ctrl = d
+            .metrics
+            .iter()
+            .find(|(n, _)| n == "Acme.Billing.InvoicesController")
+            .expect("controller metrics");
+        assert_eq!(
+            ctrl.1.attributes,
+            vec![
+                "ApiController".to_string(),
+                "Route('api/invoices')".to_string(),
+            ]
+        );
+        let list = ctrl
+            .1
+            .methods
+            .iter()
+            .find(|m| m.name == "List")
+            .expect("List method");
+        assert_eq!(
+            list.attributes,
+            vec![
+                "HttpGet".to_string(),
+                "Authorize(Roles = 'admin')".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn strips_attribute_suffix_and_qualifies_to_last_segment() {
+        let src = r#"
+namespace N {
+    [System.SerializableAttribute]
+    public class A {}
+}
+"#;
+        let d = extract_decls(src).unwrap();
+        let a = d.metrics.iter().find(|(n, _)| n == "N.A").unwrap();
+        assert_eq!(a.1.attributes, vec!["Serializable".to_string()]);
+    }
+
+    #[test]
+    fn method_one_liner_carries_attributes() {
+        let m = crate::model::MethodMetric {
+            name: "Get".to_string(),
+            line_start: 20,
+            line_end: 28,
+            loc: 9,
+            complexity: 2,
+            file_id: None,
+            attributes: vec!["HttpGet".to_string(), "Route('{id}')".to_string()],
+        };
+        let s = serde_yaml::to_string(&m).unwrap();
+        assert!(
+            s.contains("Get L20-28 loc=9 cx=2 [HttpGet, Route('{id}')]"),
+            "unexpected serialization: {s}"
+        );
     }
 
     #[test]

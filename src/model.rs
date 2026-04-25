@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::{Serialize, Serializer};
 
 /// Cheap structural metrics computed per type during the tree-sitter scan.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, bincode::Encode, bincode::Decode)]
 pub struct TypeMetrics {
     /// Source lines spanned by the type declaration (inclusive). For partial
     /// types this is the sum across all partial fragments.
@@ -31,6 +31,13 @@ pub struct TypeMetrics {
     /// list. Names are not disambiguated against the cross-project catalog.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bases: Vec<String>,
+    /// Attributes applied directly to the type, in source order. Names have
+    /// the trailing `Attribute` stripped (`ServiceContract`, not
+    /// `ServiceContractAttribute`). When an attribute carries arguments they
+    /// are rendered as `Name(args)` with C# `"` rewritten to `'` for YAML
+    /// plain-scalar safety. Empty when the type has no attributes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<String>,
 }
 
 /// One declaration fragment of a type. `file_id` indexes the owning project's
@@ -38,7 +45,7 @@ pub struct TypeMetrics {
 ///
 /// Serialized as a compact single-line string — `"f{file_id}:{start}-{end}"`
 /// — to keep metrics.yaml dense. `lookup` parses it back.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct SourceSpan {
     pub file_id: u32,
     pub line_start: u32,
@@ -57,7 +64,7 @@ impl Serialize for SourceSpan {
 /// Serialized as `"<name> L{start}-{end} loc={loc} cx={cx}"`, with an extra
 /// ` f={file_id}` suffix only for partial-class methods whose file differs
 /// from the type's primary span.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct MethodMetric {
     /// Method, ctor, dtor, or operator name. Overloads share a name.
     pub name: String,
@@ -69,25 +76,57 @@ pub struct MethodMetric {
     /// other than the type's primary span. Non-partial types leave this
     /// `None`; the method inherits the file from `spans[0]`.
     pub file_id: Option<u32>,
+    /// Attributes applied to the method, in source order. Same rendering
+    /// rules as `TypeMetrics::attributes`. Appended to the serialized
+    /// one-liner as ` [A, B]` after the optional `f=<id>` slot.
+    pub attributes: Vec<String>,
 }
 
 impl Serialize for MethodMetric {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let attrs_suffix = if self.attributes.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", self.attributes.join(", "))
+        };
         match self.file_id {
             Some(f) => s.collect_str(&format_args!(
-                "{} L{}-{} loc={} cx={} f={}",
-                self.name, self.line_start, self.line_end, self.loc, self.complexity, f
+                "{} L{}-{} loc={} cx={} f={}{}",
+                self.name,
+                self.line_start,
+                self.line_end,
+                self.loc,
+                self.complexity,
+                f,
+                attrs_suffix
             )),
             None => s.collect_str(&format_args!(
-                "{} L{}-{} loc={} cx={}",
-                self.name, self.line_start, self.line_end, self.loc, self.complexity
+                "{} L{}-{} loc={} cx={}{}",
+                self.name,
+                self.line_start,
+                self.line_end,
+                self.loc,
+                self.complexity,
+                attrs_suffix
             )),
         }
     }
 }
 
 /// Kinds of type declarations tracked by the tree-sitter source scan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    bincode::Encode,
+    bincode::Decode,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TypeKind {
     Class,
