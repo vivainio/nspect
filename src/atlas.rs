@@ -444,7 +444,7 @@ fn ref_name(r: &AtlasRef) -> &str {
 /// skipping a leading `src` / `source` wrapper segment if present.
 ///
 /// Falls back to "unmapped" if the project lives outside the scan root.
-fn derive_area(project_path: &Path, scan_root: &Path) -> (String, PathBuf) {
+pub fn derive_area(project_path: &Path, scan_root: &Path) -> (String, PathBuf) {
     let scan_root = scan_root
         .canonicalize()
         .unwrap_or_else(|_| scan_root.to_path_buf());

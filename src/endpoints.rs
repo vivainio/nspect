@@ -56,6 +56,12 @@ pub struct EndpointsSnapshot {
 pub struct ProjectEndpoints {
     pub name: String,
     pub path: PathBuf,
+    /// Area slug computed identically to `atlas.yaml` — first path segment
+    /// after a leading `src/` wrapper, with `spec/areas.yaml` overrides
+    /// applied. Empty when no area can be derived (e.g. project at scan
+    /// root).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub area: String,
     pub endpoints: Vec<Endpoint>,
 }
 
@@ -153,6 +159,24 @@ pub fn build(projects: &[Project], scan_root: &Path) -> EndpointsSnapshot {
         .canonicalize()
         .unwrap_or_else(|_| scan_root.to_path_buf());
 
+    // Resolve area-per-project the same way atlas does: path-based
+    // `derive_area` + `spec/areas.yaml` overrides. Doing it here (rather
+    // than reading atlas.yaml) keeps endpoints buildable independently.
+    let area_spec = crate::spec::AreasSpec::load(&root).unwrap_or_default();
+    let project_paths: Vec<PathBuf> = projects
+        .iter()
+        .map(|p| crate::csproj::canonicalize(&p.path))
+        .collect();
+    let (overrides, _warnings) = area_spec.resolve(&root, &project_paths);
+    let area_for = |p: &Project| -> String {
+        let canon = crate::csproj::canonicalize(&p.path);
+        if let Some(o) = overrides.get(&canon) {
+            return o.clone();
+        }
+        let (a, _) = crate::atlas::derive_area(&p.path, &root);
+        a
+    };
+
     // Pass 1 — classify endpoints in every project.
     let mut per_project: Vec<ProjectEndpoints> = Vec::new();
     // Index: endpoint simple-name -> list of (project_idx_in_per_project,
@@ -193,6 +217,7 @@ pub fn build(projects: &[Project], scan_root: &Path) -> EndpointsSnapshot {
         per_project.push(ProjectEndpoints {
             name: p.name.clone(),
             path: relativize(&p.path, &root),
+            area: area_for(p),
             endpoints,
         });
     }
