@@ -430,10 +430,12 @@ pub fn run_atlas(mut args: AtlasArgs) -> Result<()> {
             } else {
                 None
             };
-            // Build the endpoints + build-deps snapshots before atlas
-            // takes ownership of `projects`. Same input data either way.
+            // Build the endpoints + build-deps + build-plan snapshots
+            // before atlas takes ownership of `projects`. Same input data
+            // either way.
             let endpoints_snapshot = crate::endpoints::build(&projects, &args.path);
             let build_deps_snapshot = crate::build_deps::build(&projects, &args.path);
+            let build_plan_snapshot = crate::build_plan::build(&projects, &args.path);
             let atlas_model = atlas::build(projects, &args.path, opts);
 
             write_artifact(
@@ -481,14 +483,20 @@ pub fn run_atlas(mut args: AtlasArgs) -> Result<()> {
                 artifact_header("endpoints", args.format),
                 &encode_atlas(&endpoints_snapshot, args.format, args.compact)?,
             )?;
-            // build-deps.json is always JSON regardless of --format, since
-            // the audience is build tools.
+            // build-deps.json + build-plan.json are always JSON regardless
+            // of --format, since the audience is build tools.
             let build_deps_body = if args.compact {
                 serde_json::to_string(&build_deps_snapshot)?
             } else {
                 serde_json::to_string_pretty(&build_deps_snapshot)?
             };
             write_artifact(&dir.join("build-deps.json"), "", &build_deps_body)?;
+            let build_plan_body = if args.compact {
+                serde_json::to_string(&build_plan_snapshot)?
+            } else {
+                serde_json::to_string_pretty(&build_plan_snapshot)?
+            };
+            write_artifact(&dir.join("build-plan.json"), "", &build_plan_body)?;
         }
     }
     Ok(())

@@ -20,6 +20,9 @@ pub struct BuildDeps {
 #[derive(Debug, Serialize)]
 pub struct ProjectDeps {
     pub path: PathBuf,
+    /// Forward-dep depth (`max(deps.wave) + 1`, leaves at 0). Matches the
+    /// wave index a parallel build runner would schedule this project in.
+    pub wave: u32,
     /// Direct project references (projects this one declares
     /// `<ProjectReference>` for).
     pub deps: Vec<String>,
@@ -36,32 +39,7 @@ pub fn build(projects: &[Project], scan_root: &Path) -> BuildDeps {
         .canonicalize()
         .unwrap_or_else(|_| scan_root.to_path_buf());
 
-    // Map every project_ref path back to a project name. We canonicalize
-    // both sides so refs that came in via slightly different relative
-    // paths still resolve to the same node.
-    let mut name_by_path: HashMap<PathBuf, String> = HashMap::new();
-    for p in projects {
-        name_by_path.insert(crate::csproj::canonicalize(&p.path), p.name.clone());
-    }
-
-    let mut deps: HashMap<String, BTreeSet<String>> = HashMap::new();
-    let mut dependents: HashMap<String, BTreeSet<String>> = HashMap::new();
-
-    for p in projects {
-        let entry = deps.entry(p.name.clone()).or_default();
-        for r in &p.project_refs {
-            let canon = crate::csproj::canonicalize(r);
-            let Some(target) = name_by_path.get(&canon) else {
-                continue;
-            };
-            entry.insert(target.clone());
-            dependents
-                .entry(target.clone())
-                .or_default()
-                .insert(p.name.clone());
-        }
-    }
-
+    let (deps, dependents) = dep_graph(projects);
     // Layer = longest forward-dep chain length. Drives the topological
     // ordering inside `rebuild_on_change`. Cycles are tolerated: a node
     // inside a cycle gets the depth of its last-resolved entry.
@@ -104,6 +82,7 @@ pub fn build(projects: &[Project], scan_root: &Path) -> BuildDeps {
             p.name.clone(),
             ProjectDeps {
                 path: relativize(&p.path, &root),
+                wave: layers.get(&p.name).copied().unwrap_or(0),
                 deps: direct_deps,
                 dependents: direct_dependents,
                 rebuild_on_change: rebuild,
@@ -120,8 +99,40 @@ fn relativize(path: &Path, root: &Path) -> PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Build the forward and reverse project-ref graphs, keyed by project name.
+/// Names of unresolved refs are silently dropped — same behavior as atlas's
+/// `unresolved` reporting (we don't double-warn here).
+pub(crate) fn dep_graph(
+    projects: &[Project],
+) -> (
+    HashMap<String, BTreeSet<String>>,
+    HashMap<String, BTreeSet<String>>,
+) {
+    let mut name_by_path: HashMap<PathBuf, String> = HashMap::new();
+    for p in projects {
+        name_by_path.insert(crate::csproj::canonicalize(&p.path), p.name.clone());
+    }
+    let mut deps: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut dependents: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for p in projects {
+        let entry = deps.entry(p.name.clone()).or_default();
+        for r in &p.project_refs {
+            let canon = crate::csproj::canonicalize(r);
+            let Some(target) = name_by_path.get(&canon) else {
+                continue;
+            };
+            entry.insert(target.clone());
+            dependents
+                .entry(target.clone())
+                .or_default()
+                .insert(p.name.clone());
+        }
+    }
+    (deps, dependents)
+}
+
 /// Forward-dep depth per project. Memoized DFS with cycle protection.
-fn compute_layers(deps: &HashMap<String, BTreeSet<String>>) -> HashMap<String, u32> {
+pub(crate) fn compute_layers(deps: &HashMap<String, BTreeSet<String>>) -> HashMap<String, u32> {
     let mut out: HashMap<String, u32> = HashMap::new();
     for name in deps.keys() {
         let mut stack: BTreeSet<String> = BTreeSet::new();
@@ -197,6 +208,7 @@ mod tests {
             dom.dependents,
             vec!["Web".to_string(), "Worker".to_string()]
         );
+        assert_eq!(dom.wave, 0); // leaf
         // Topological: leaves first → Domain (layer 0), Web/Worker (1),
         // Tests (2).
         assert_eq!(
@@ -212,6 +224,8 @@ mod tests {
         // Tests is a leaf consumer — only itself rebuilds.
         let tests = bd.projects.get("Tests").unwrap();
         assert_eq!(tests.rebuild_on_change, vec!["Tests".to_string()]);
+        assert_eq!(tests.wave, 2);
+        assert_eq!(bd.projects.get("Web").unwrap().wave, 1);
     }
 
     #[test]
