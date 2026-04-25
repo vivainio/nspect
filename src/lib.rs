@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod atlas;
+pub mod build_deps;
 pub mod cache;
 pub mod classes;
 pub mod cli;
