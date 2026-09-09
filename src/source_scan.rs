@@ -197,6 +197,9 @@ pub fn scan_projects_cached(
                         // partial fragments; dedup-and-sort happens once
                         // after the whole project's files have been folded.
                         slot.referenced_types.extend(m.referenced_types);
+                        // Service fields likewise — a partial fragment may
+                        // declare its own. Dedup happens in the final pass.
+                        slot.service_fields.extend(m.service_fields);
                     }
                     scan.source_files.push(path.to_path_buf());
                 }
@@ -217,6 +220,8 @@ pub fn scan_projects_cached(
             }
             m.referenced_types.sort();
             m.referenced_types.dedup();
+            m.service_fields.sort();
+            m.service_fields.dedup();
         }
 
         // Do NOT sort `scan.source_files` here — spans already reference
@@ -423,7 +428,180 @@ fn compute_metrics(node: tree_sitter::Node<'_>, src: &[u8]) -> TypeMetrics {
         bases,
         attributes,
         referenced_types: Vec::new(),
+        service_fields: collect_service_fields(node, src),
     }
+}
+
+/// Walk a type's body and pick out instance fields/properties whose declared
+/// type isn't a primitive. The result is a sorted `(name, simple_type)` list,
+/// keyed by field/property name. Static and const declarations are skipped.
+/// Multiple declarators inside one `field_declaration` (`IFoo _a, _b;`) all
+/// inherit the declaration's type. Auto-properties are captured the same way
+/// fields are. Generic types collapse to their outer simple name (`IList<X>`
+/// → `IList`); for service tracing the user's identifier — typically the
+/// interface — is enough.
+fn collect_service_fields(node: tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, String)> {
+    let mut tc0 = node.walk();
+    let body = node.child_by_field_name("body").or_else(|| {
+        node.named_children(&mut tc0)
+            .find(|c| c.kind() == "declaration_list")
+    });
+    let Some(body) = body else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut bc = body.walk();
+    for child in body.named_children(&mut bc) {
+        let kind = child.kind();
+        if has_static_or_const(child, src) {
+            continue;
+        }
+        match kind {
+            "field_declaration" | "event_field_declaration" => {
+                // Type lives on the inner variable_declaration; declarator
+                // names live as variable_declarator children of that.
+                let mut cc = child.walk();
+                let var_decl = child
+                    .named_children(&mut cc)
+                    .find(|c| c.kind() == "variable_declaration");
+                let Some(var_decl) = var_decl else {
+                    continue;
+                };
+                let ty_simple = match var_decl.child_by_field_name("type") {
+                    Some(t) => first_type_name(t, src),
+                    None => None,
+                };
+                let Some(ty) = ty_simple else { continue };
+                let mut dc = var_decl.walk();
+                for d in var_decl.named_children(&mut dc) {
+                    if d.kind() != "variable_declarator" {
+                        continue;
+                    }
+                    if let Some(name) = d
+                        .child_by_field_name("name")
+                        .and_then(|n| n.utf8_text(src).ok())
+                    {
+                        out.push((name.to_string(), ty.clone()));
+                    }
+                }
+            }
+            "property_declaration" => {
+                let ty = child
+                    .child_by_field_name("type")
+                    .and_then(|t| first_type_name(t, src));
+                let name = child
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(src).ok());
+                if let (Some(ty), Some(name)) = (ty, name) {
+                    out.push((name.to_string(), ty));
+                }
+            }
+            _ => {}
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// First simple type name from a type-position node, or `None` for predefined
+/// types. Reuses `collect_type_names` and takes the first hit.
+fn first_type_name(node: tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
+    let mut buf: Vec<String> = Vec::new();
+    collect_type_names(node, src, &mut buf);
+    buf.into_iter().next()
+}
+
+/// Inspect a member declaration's modifiers to filter out static/const.
+fn has_static_or_const(node: tree_sitter::Node<'_>, src: &[u8]) -> bool {
+    let mut tc = node.walk();
+    for c in node.children(&mut tc) {
+        if c.kind() == "modifier" {
+            if let Ok(t) = c.utf8_text(src) {
+                if t == "static" || t == "const" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Collect every `(receiver, method)` pair invoked inside a method body.
+/// Receiver is a bare identifier — `_foo.Bar()`, `Foo.Bar()`, and
+/// `this._foo.Bar()` all qualify (the `this.` prefix is stripped). Chained
+/// calls (`a.b.c.D()`), parenthesized receivers, and bare `this.X()` calls
+/// are skipped — they don't help the consumer-of-endpoint cross-index.
+fn collect_invocations(node: tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    walk_invocations(node, src, &mut out);
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn walk_invocations(node: tree_sitter::Node<'_>, src: &[u8], out: &mut Vec<(String, String)>) {
+    if node.kind() == "invocation_expression" {
+        if let Some(f) = node.child_by_field_name("function") {
+            if let Some(pair) = invocation_receiver_method(f, src) {
+                out.push(pair);
+            }
+        }
+    }
+    let mut c = node.walk();
+    for child in node.named_children(&mut c) {
+        walk_invocations(child, src, out);
+    }
+}
+
+/// Decode the `function` child of an invocation: returns `Some((recv, name))`
+/// if the receiver is a single identifier (after `this.` stripping), else
+/// `None`. Generic invocations (`_foo.Bar<T>()`) unwrap the `generic_name`
+/// to grab `Bar`.
+fn invocation_receiver_method(func: tree_sitter::Node<'_>, src: &[u8]) -> Option<(String, String)> {
+    if func.kind() != "member_access_expression" {
+        return None;
+    }
+    let recv = func.child_by_field_name("expression")?;
+    let name_node = func.child_by_field_name("name")?;
+    let method = match name_node.kind() {
+        "identifier" => name_node.utf8_text(src).ok()?.to_string(),
+        "generic_name" => {
+            // generic_name children aren't field-named; the identifier is the
+            // first named child.
+            let mut tc = name_node.walk();
+            let first = name_node.named_children(&mut tc).next()?;
+            if first.kind() != "identifier" {
+                return None;
+            }
+            first.utf8_text(src).ok()?.to_string()
+        }
+        _ => return None,
+    };
+    let receiver = match recv.kind() {
+        "identifier" => recv.utf8_text(src).ok()?.to_string(),
+        "this_expression" => return None,
+        "member_access_expression" => {
+            // Tree-sitter c-sharp parses `this.X` as a member_access_expression
+            // whose `expression:` slot is empty (the `this` keyword is left
+            // unnamed). Treat that as a `this.`-prefixed access and use the
+            // name field as the effective receiver. An explicit
+            // `this_expression` in the slot is the same case. Anything else
+            // (chained `a.b.c`) is too ambiguous to credit.
+            match recv.child_by_field_name("expression") {
+                None => {}
+                Some(inner) if matches!(inner.kind(), "this_expression" | "this") => {}
+                Some(_) => return None,
+            }
+            let inner_name = recv.child_by_field_name("name")?;
+            if inner_name.kind() != "identifier" {
+                return None;
+            }
+            inner_name.utf8_text(src).ok()?.to_string()
+        }
+        _ => return None,
+    };
+    Some((receiver, method))
 }
 
 /// Collect attribute usages applied to a declaration node (type or method).
@@ -512,6 +690,7 @@ fn method_metric(node: tree_sitter::Node<'_>, src: &[u8]) -> crate::model::Metho
         file_id: None, // stamped by `extract_decls_file`
         attributes,
         signature_types,
+        invocations: collect_invocations(node, src),
     }
 }
 
@@ -566,12 +745,7 @@ fn count_branches_siblings(cursor: &mut TreeCursor<'_>, out: &mut u32) {
 /// references bag and the innermost enclosing type's `referenced_types`.
 /// Self-references (a type referencing itself by simple name) are filtered
 /// out so consumer-graphs stay clean.
-fn record_refs(
-    node: tree_sitter::Node<'_>,
-    src: &[u8],
-    ty_stack: &[String],
-    out: &mut FileDecls,
-) {
+fn record_refs(node: tree_sitter::Node<'_>, src: &[u8], ty_stack: &[String], out: &mut FileDecls) {
     let mut buf: Vec<String> = Vec::new();
     collect_type_names(node, src, &mut buf);
     if buf.is_empty() {
@@ -934,6 +1108,63 @@ namespace N {
     }
 
     #[test]
+    fn extracts_service_fields_and_invocations() {
+        let src = r#"
+namespace N {
+    public class Worker {
+        private readonly IFooService _foo;
+        public IBarService Bar { get; }
+        private static IBaz _shared;
+        private const int Limit = 10;
+
+        public Worker(IFooService foo, IBarService bar) {
+            _foo = foo;
+            Bar = bar;
+        }
+
+        public void Run() {
+            _foo.DoIt();
+            Bar.Compute();
+            this._foo.DoOther();
+            _foo.Generic<int>();
+            ChannelFactory.CreateChannel();
+            (something).Skipped();
+        }
+    }
+}
+"#;
+        let d = extract_decls(src).unwrap();
+        let w = d
+            .metrics
+            .iter()
+            .find(|(n, _)| n == "N.Worker")
+            .expect("worker metrics");
+        let m = &w.1;
+        // Static + const are filtered; field + auto-property remain.
+        assert_eq!(
+            m.service_fields,
+            vec![
+                ("Bar".to_string(), "IBarService".to_string()),
+                ("_foo".to_string(), "IFooService".to_string()),
+            ]
+        );
+        let run = m
+            .methods
+            .iter()
+            .find(|me| me.name == "Run")
+            .expect("Run method");
+        assert!(run.invocations.contains(&("_foo".into(), "DoIt".into())));
+        assert!(run.invocations.contains(&("_foo".into(), "DoOther".into())));
+        assert!(run.invocations.contains(&("_foo".into(), "Generic".into())));
+        assert!(run.invocations.contains(&("Bar".into(), "Compute".into())));
+        assert!(run
+            .invocations
+            .contains(&("ChannelFactory".into(), "CreateChannel".into())));
+        // Parenthesised receiver — not a bare identifier — is not captured.
+        assert!(!run.invocations.iter().any(|(_, name)| name == "Skipped"));
+    }
+
+    #[test]
     fn extracts_type_and_method_attributes() {
         let src = r#"
 namespace Acme.Billing {
@@ -966,12 +1197,8 @@ namespace Acme.Billing {
         // `Attribute` suffix is implicit here, but suffix-strip should still
         // be a no-op when the source already wrote the bare name.
         assert_eq!(svc.1.attributes, vec!["ServiceContract".to_string()]);
-        let by_name: std::collections::HashMap<&str, &crate::model::MethodMetric> = svc
-            .1
-            .methods
-            .iter()
-            .map(|m| (m.name.as_str(), m))
-            .collect();
+        let by_name: std::collections::HashMap<&str, &crate::model::MethodMetric> =
+            svc.1.methods.iter().map(|m| (m.name.as_str(), m)).collect();
         assert_eq!(
             by_name["Submit"].attributes,
             vec!["OperationContract".to_string()]
@@ -1033,6 +1260,7 @@ namespace N {
             file_id: None,
             attributes: vec!["HttpGet".to_string(), "Route('{id}')".to_string()],
             signature_types: vec![],
+            invocations: vec![],
         };
         let s = serde_yaml::to_string(&m).unwrap();
         assert!(

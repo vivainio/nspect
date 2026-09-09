@@ -15,7 +15,7 @@ use crate::source_scan::FileDecls;
 
 /// Bump whenever `FileDecls` (or anything it transitively encodes) changes
 /// shape. A mismatch causes the cache to be discarded on load.
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
 
 /// Magic bytes to spot truncated / wrong-format files cheaply.
 const CACHE_MAGIC: [u8; 4] = *b"NSPC";
@@ -107,7 +107,10 @@ pub fn save(path: &Path, cache: &Cache) -> Result<()> {
 
 /// Default cache file location for a given scan root.
 pub fn default_path(scan_root: &Path) -> PathBuf {
-    scan_root.join(".nspect").join("cache").join("source_scan.bin")
+    scan_root
+        .join(".nspect")
+        .join("cache")
+        .join("source_scan.bin")
 }
 
 /// Read the (mtime_ns, len) stamp the cache compares against. `None` if the
@@ -116,10 +119,7 @@ pub fn stamp(path: &Path) -> Option<(i128, u64)> {
     let md = std::fs::metadata(path).ok()?;
     let len = md.len();
     let mtime = md.modified().ok()?;
-    let dur = mtime
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_nanos() as i128;
+    let dur = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos() as i128;
     Some((dur, len))
 }
 

@@ -21,5 +21,6 @@ fn main() -> Result<()> {
         Command::Focus(args) => nspect::cli::run_focus(args),
         Command::Lookup(args) => nspect::cli::run_lookup(args),
         Command::Init(args) => nspect::cli::run_init(args),
+        Command::InstallSkills(args) => nspect::cli::run_install_skills(args),
     }
 }

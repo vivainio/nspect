@@ -50,7 +50,16 @@ pub struct Match {
     pub complexity: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bases: Vec<String>,
-    /// Pre-formatted single-line methods: `"Name  path:start-end  loc=N  cx=N"`.
+    /// Shared file path when every entry in `methods` lives in the same file
+    /// (the common case for interfaces and non-partial classes). Lets each
+    /// method line drop the redundant path prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub methods_file: Option<String>,
+    /// Pre-formatted single-line methods. Shape depends on context:
+    ///   - shared file (`methods_file` set): `"Name  L<start>-<end>  loc=N  cx=N"`
+    ///   - mixed files: `"Name  path:start-end  loc=N  cx=N"`
+    /// With `--min` the trailing `  loc=N  cx=N` is omitted and signatures
+    /// are skipped (bare names).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -86,11 +95,17 @@ pub struct FileMatch {
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
     pub signatures: bool,
+    /// Minimal output: bare method names (no signatures) and no `loc=/cx=`
+    /// per-method tail. Type-level metrics still ship.
+    pub min: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { signatures: true }
+        Self {
+            signatures: true,
+            min: false,
+        }
     }
 }
 
@@ -194,6 +209,7 @@ pub fn run_with(
                         members: None,
                         complexity: None,
                         bases: Vec::new(),
+                        methods_file: None,
                         methods: Vec::new(),
                         referenced_by: Vec::new(),
                         endpoint: None,
@@ -247,7 +263,9 @@ pub fn run_with(
     }
 
     for (m, infos) in matches.iter_mut().zip(pending_methods.iter()) {
-        m.methods = format_methods(infos, &repo_root, opts.signatures, cache);
+        let (shared, lines) = format_methods(infos, &repo_root, opts, cache);
+        m.methods_file = shared;
+        m.methods = lines;
     }
     for m in matches.iter_mut() {
         m.referenced_by.sort();
@@ -306,7 +324,13 @@ pub fn run_with(
         let by_fqn = endpoints_index(eps);
         for m in matches.iter_mut() {
             if let Some(node) = by_fqn.get(&m.fqn) {
-                m.endpoint = Some((*node).clone());
+                let mut node = (*node).clone();
+                if opts.min {
+                    if let Some(map) = node.as_mapping_mut() {
+                        map.remove(Value::from("users"));
+                    }
+                }
+                m.endpoint = Some(node);
             }
         }
     }
@@ -487,9 +511,17 @@ fn populate_from_metrics(m: &mut Match, body: &Value, files: &[PathBuf]) -> Vec<
 fn format_methods(
     infos: &[MethodInfo],
     repo_root: &Path,
-    want_sigs: bool,
+    opts: Options,
     cache: &mut SigCache,
-) -> Vec<String> {
+) -> (Option<String>, Vec<String>) {
+    if infos.is_empty() {
+        return (None, Vec::new());
+    }
+    // Methods all in the same file? The interface / non-partial class case.
+    // When yes, hoist the path to `methods_file` so per-method lines stay tight.
+    let first_path = &infos[0].path;
+    let shared = infos.iter().all(|mi| &mi.path == first_path);
+    let want_sigs = opts.signatures && !opts.min;
     let mut out = Vec::with_capacity(infos.len());
     for mi in infos {
         let display_name = if want_sigs {
@@ -503,17 +535,26 @@ fn format_methods(
         } else {
             mi.name.clone()
         };
-        out.push(format!(
-            "{}  {}:{}-{}  loc={}  cx={}",
-            display_name,
-            mi.path.display(),
-            mi.line_start,
-            mi.line_end,
-            mi.loc,
-            mi.cx
-        ));
+        let location = if shared {
+            format!("L{}-{}", mi.line_start, mi.line_end)
+        } else {
+            format!("{}:{}-{}", mi.path.display(), mi.line_start, mi.line_end)
+        };
+        if opts.min {
+            out.push(format!("{}  {}", display_name, location));
+        } else {
+            out.push(format!(
+                "{}  {}  loc={}  cx={}",
+                display_name, location, mi.loc, mi.cx
+            ));
+        }
     }
-    out
+    let shared_path = if shared {
+        Some(first_path.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+    (shared_path, out)
 }
 
 fn repo_root_from(atlas_dir: &Path) -> PathBuf {
@@ -806,7 +847,8 @@ mod tests {
         assert_eq!(m.at, vec!["src/Domain/Customer.cs:10-80".to_string()]);
         assert_eq!(m.loc, Some(50));
         assert_eq!(m.complexity, Some(7));
-        assert!(m.methods[0].contains("src/Domain/Customer.cs:22-40"));
+        assert_eq!(m.methods_file.as_deref(), Some("src/Domain/Customer.cs"));
+        assert!(m.methods[0].contains("L22-40"));
         assert!(m.methods[0].starts_with("Validate"));
 
         let fr = run_file(&dir, Path::new("Customer.cs")).unwrap();

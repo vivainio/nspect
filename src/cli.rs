@@ -40,6 +40,41 @@ pub enum Command {
     /// `.gitignore`, seed `.nspect/spec/areas.yaml`, and populate `gen/`
     /// with a full atlas (`--check --references`).
     Init(InitArgs),
+    /// Install the bundled Claude Code skill (SKILL.md) so agents know
+    /// when and how to use `nspect lookup`.
+    InstallSkills(InstallSkillsArgs),
+}
+
+#[derive(Debug, Parser)]
+pub struct InstallSkillsArgs {
+    /// Install into the current repo (`.claude/skills/nspect/`) instead of
+    /// the user-global location (`~/.claude/skills/nspect/`).
+    #[arg(long)]
+    pub project: bool,
+}
+
+const NSPECT_SKILL_MD: &str = include_str!("../assets/skills/nspect/SKILL.md");
+
+pub fn run_install_skills(args: InstallSkillsArgs) -> Result<()> {
+    let dest_dir = if args.project {
+        std::env::current_dir()
+            .context("getting current directory")?
+            .join(".claude")
+            .join("skills")
+            .join("nspect")
+    } else {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .context("HOME not set; cannot locate ~/.claude")?;
+        home.join(".claude").join("skills").join("nspect")
+    };
+    std::fs::create_dir_all(&dest_dir)
+        .with_context(|| format!("creating {}", dest_dir.display()))?;
+    let dest = dest_dir.join("SKILL.md");
+    std::fs::write(&dest, NSPECT_SKILL_MD)
+        .with_context(|| format!("writing {}", dest.display()))?;
+    eprintln!("installed {}", dest.display());
+    Ok(())
 }
 
 #[derive(Debug, Parser)]
@@ -153,6 +188,10 @@ pub struct LookupArgs {
     /// need line ranges.
     #[arg(long)]
     pub no_sig: bool,
+    /// Minimal output: skip method signatures and per-method `loc=/cx=`
+    /// counters. Method names + line ranges remain.
+    #[arg(long)]
+    pub min: bool,
 }
 
 pub fn run_lookup(args: LookupArgs) -> Result<()> {
@@ -165,6 +204,7 @@ pub fn run_lookup(args: LookupArgs) -> Result<()> {
     };
     let opts = lookup::Options {
         signatures: !args.no_sig,
+        min: args.min,
     };
     let mut cache = lookup::SigCache::new();
     let mut types = Vec::with_capacity(args.names.len());

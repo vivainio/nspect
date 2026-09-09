@@ -45,6 +45,15 @@ pub struct TypeMetrics {
     /// shows up here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub referenced_types: Vec<String>,
+    /// Instance fields and properties declared directly on this type, paired
+    /// with the simple name of their declared type. Drives the per-consumer
+    /// `calls:` cross-index in `endpoints.yaml`: when a constructor stashes
+    /// an injected service in `_foo`, this is how we remember that `_foo`
+    /// holds an `IFooService`. Sorted by field name. Static and const fields
+    /// are excluded; predefined types (`int`, `string`, …) are excluded.
+    /// Not serialized to metrics.yaml — internal channel for endpoints.rs.
+    #[serde(default, skip_serializing)]
+    pub service_fields: Vec<(String, String)>,
 }
 
 /// One declaration fragment of a type. `file_id` indexes the owning project's
@@ -93,6 +102,14 @@ pub struct MethodMetric {
     /// list in `endpoints.yaml`. Not rendered in the method one-liner; sits
     /// alongside it via a separate channel so the YAML stays terse.
     pub signature_types: Vec<String>,
+    /// Method calls observed inside this method body, as `(receiver, method)`
+    /// pairs. The receiver is a bare identifier — typically a field or
+    /// property name (`_foo.Bar()` → `("_foo", "Bar")`) or a type name for
+    /// static calls (`Foo.Bar()` → `("Foo", "Bar")`). `this.x.Y()` collapses
+    /// to `("x", "Y")`. Chained or parenthesized receivers are skipped.
+    /// Sorted, deduped. Not rendered in the method one-liner — internal
+    /// channel for `endpoints.rs`.
+    pub invocations: Vec<(String, String)>,
 }
 
 impl Serialize for MethodMetric {
@@ -115,12 +132,7 @@ impl Serialize for MethodMetric {
             )),
             None => s.collect_str(&format_args!(
                 "{} L{}-{} loc={} cx={}{}",
-                self.name,
-                self.line_start,
-                self.line_end,
-                self.loc,
-                self.complexity,
-                attrs_suffix
+                self.name, self.line_start, self.line_end, self.loc, self.complexity, attrs_suffix
             )),
         }
     }

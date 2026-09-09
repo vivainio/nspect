@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use std::collections::BTreeSet;
+
 use crate::model::{MethodMetric, Project, TypeKind, TypeMetrics};
 
 /// Kinds of remote interface we detect today. The string form lands in YAML
@@ -88,11 +90,36 @@ pub struct Endpoint {
     /// form when a verb/route/dtos/extras is present.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<EndpointMethod>,
-    /// Consumers of this contract, grouped by project. Each value is the
-    /// sorted list of type local-names (simple names; namespace dropped to
-    /// keep the file scannable) that mention this endpoint type.
+    /// Consumers of this contract, grouped by project. Each consumer is a
+    /// type local-name (simple name; namespace dropped to keep the file
+    /// scannable). When we can trace which endpoint methods the consumer
+    /// actually invokes — the consumer holds the contract in a field/property
+    /// and calls methods on it — those names appear under `calls:`. A bare
+    /// reference with no traceable call site renders as a plain scalar.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub users: BTreeMap<String, Vec<String>>,
+    pub users: BTreeMap<String, Vec<EndpointUser>>,
+}
+
+/// A single consumer entry under `users[project]`. Renders as a YAML scalar
+/// (just the type name) when no calls were traced; otherwise as a `{type,
+/// calls}` mapping. Same compact-when-bare convention as `EndpointMethod`.
+#[derive(Debug, Default, Clone)]
+pub struct EndpointUser {
+    pub type_name: String,
+    pub calls: Vec<String>,
+}
+
+impl Serialize for EndpointUser {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        if self.calls.is_empty() {
+            return s.serialize_str(&self.type_name);
+        }
+        let mut m = s.serialize_map(Some(2))?;
+        m.serialize_entry("type", &self.type_name)?;
+        m.serialize_entry("calls", &self.calls)?;
+        m.end()
+    }
 }
 
 /// One reachable method on an endpoint. Renders as a bare YAML scalar when
@@ -224,9 +251,24 @@ pub fn build(projects: &[Project], scan_root: &Path) -> EndpointsSnapshot {
 
     // Pass 2 — cross-index consumers. Walk every type in every project; for
     // each `referenced_types` entry that names a known endpoint simple-name,
-    // record the consumer under the matching endpoint(s).
+    // record the consumer under the matching endpoint(s). When the consumer
+    // also stashes that endpoint in a field/property, intersect its method
+    // invocations with the endpoint's known method names to populate
+    // `calls:` — the actual surface of the contract that this consumer hits.
+    //
+    // Keyed by `(project_name, endpoint_simple, consumer_simple)` so the
+    // post-pass merge can union calls across multiple references and methods.
+    let mut user_calls: BTreeMap<(String, usize, usize, String), BTreeSet<String>> =
+        BTreeMap::new();
     for p in projects {
         for (consumer_fqn, m) in &p.type_metrics {
+            // Field/property name → simple type name for this consumer.
+            // Multiple fields can share a type; we keep the full map so we
+            // can answer "is this receiver an instance of endpoint X?".
+            let mut field_types: BTreeMap<&str, &str> = BTreeMap::new();
+            for (fname, fty) in &m.service_fields {
+                field_types.insert(fname.as_str(), fty.as_str());
+            }
             for r in &m.referenced_types {
                 let Some(matches) = by_simple.get(r) else {
                     continue;
@@ -237,28 +279,71 @@ pub fn build(projects: &[Project], scan_root: &Path) -> EndpointsSnapshot {
                     .unwrap_or(consumer_fqn)
                     .to_string();
                 for (pe_idx, ep_idx) in matches {
-                    let ep = &mut per_project[*pe_idx].endpoints[*ep_idx];
-                    // Skip the endpoint type referencing itself across the
-                    // graph (uncommon, but cheap to guard).
+                    let ep = &per_project[*pe_idx].endpoints[*ep_idx];
                     if &ep.type_fqn == consumer_fqn {
                         continue;
                     }
-                    ep.users
-                        .entry(p.name.clone())
-                        .or_default()
-                        .push(consumer_simple.clone());
+                    let ep_simple = r.as_str();
+                    let key = (p.name.clone(), *pe_idx, *ep_idx, consumer_simple.clone());
+                    let entry = user_calls.entry(key).or_default();
+
+                    // Identify this consumer's fields/properties whose type
+                    // matches the endpoint's simple name. Static-call form
+                    // also works: a receiver matching the endpoint type's
+                    // own simple name (`Foo.Bar()` where `Foo` is the
+                    // endpoint) is treated as a hit too.
+                    let mut receivers: BTreeSet<&str> = BTreeSet::new();
+                    for (fname, fty) in &field_types {
+                        if *fty == ep_simple {
+                            receivers.insert(fname);
+                        }
+                    }
+                    receivers.insert(ep_simple);
+
+                    // Endpoint method name set — only call sites that resolve
+                    // to a declared method on the contract count.
+                    let ep_method_names: BTreeSet<&str> =
+                        ep.methods.iter().map(|me| me.name.as_str()).collect();
+
+                    for meth in &m.methods {
+                        for (recv, mname) in &meth.invocations {
+                            if !receivers.contains(recv.as_str()) {
+                                continue;
+                            }
+                            if !ep_method_names.contains(mname.as_str()) {
+                                continue;
+                            }
+                            entry.insert(mname.clone());
+                        }
+                    }
                 }
             }
         }
     }
 
-    // Dedup + sort each user list.
-    for pe in &mut per_project {
-        for ep in &mut pe.endpoints {
-            for v in ep.users.values_mut() {
-                v.sort();
-                v.dedup();
-            }
+    // Fold the keyed map into per-endpoint users. A consumer with no traced
+    // calls renders as a bare scalar; one with calls renders as a mapping.
+    let mut bucketed: BTreeMap<(usize, usize), BTreeMap<String, Vec<EndpointUser>>> =
+        BTreeMap::new();
+    for ((proj, pe_idx, ep_idx, consumer), calls) in user_calls {
+        let mut sorted: Vec<String> = calls.into_iter().collect();
+        sorted.sort();
+        bucketed
+            .entry((pe_idx, ep_idx))
+            .or_default()
+            .entry(proj)
+            .or_default()
+            .push(EndpointUser {
+                type_name: consumer,
+                calls: sorted,
+            });
+    }
+    for ((pe_idx, ep_idx), per_proj) in bucketed {
+        let ep = &mut per_project[pe_idx].endpoints[ep_idx];
+        for (proj, mut users) in per_proj {
+            users.sort_by(|a, b| a.type_name.cmp(&b.type_name));
+            users.dedup_by(|a, b| a.type_name == b.type_name && a.calls == b.calls);
+            ep.users.insert(proj, users);
         }
     }
 
@@ -482,10 +567,7 @@ fn http_method_for(meth: &MethodMetric) -> Option<EndpointMethod> {
     let mut verb: Option<&'static str> = None;
     let mut inline_route: Option<String> = None;
     for attr in &meth.attributes {
-        if let Some((_, v)) = HTTP_VERB_ATTRS
-            .iter()
-            .find(|(n, _)| attr_name(attr) == *n)
-        {
+        if let Some((_, v)) = HTTP_VERB_ATTRS.iter().find(|(n, _)| attr_name(attr) == *n) {
             verb = Some(*v);
             inline_route = first_string_arg(attr);
             break;
@@ -526,6 +608,7 @@ mod tests {
             file_id: None,
             attributes: attrs.iter().map(|s| s.to_string()).collect(),
             signature_types: dtos.iter().map(|s| s.to_string()).collect(),
+            invocations: Vec::new(),
         }
     }
 
@@ -543,6 +626,7 @@ mod tests {
             bases: bases.iter().map(|s| s.to_string()).collect(),
             attributes: attrs.iter().map(|s| s.to_string()).collect(),
             referenced_types: Vec::new(),
+            service_fields: Vec::new(),
         }
     }
 
@@ -550,10 +634,7 @@ mod tests {
         let mut declared_types: BTreeMap<TypeKind, Vec<String>> = BTreeMap::new();
         let mut type_metrics: BTreeMap<String, TypeMetrics> = BTreeMap::new();
         for (k, fqn, m) in types {
-            declared_types
-                .entry(k)
-                .or_default()
-                .push(fqn.to_string());
+            declared_types.entry(k).or_default().push(fqn.to_string());
             type_metrics.insert(fqn.to_string(), m);
         }
         Project {
@@ -664,7 +745,10 @@ mod tests {
         let ep = &snap.projects[0].endpoints[0];
         assert_eq!(
             ep.extras,
-            vec!["IgnoreCsrfFilter".to_string(), "OverrideAuthorization".to_string()]
+            vec![
+                "IgnoreCsrfFilter".to_string(),
+                "OverrideAuthorization".to_string()
+            ]
         );
         assert_eq!(
             ep.methods[0].extras,
@@ -685,11 +769,7 @@ mod tests {
         );
         let p = mk_project(
             "Acme.Web",
-            vec![(
-                TypeKind::Class,
-                "Acme.Web.InvoicesController",
-                ctrl,
-            )],
+            vec![(TypeKind::Class, "Acme.Web.InvoicesController", ctrl)],
         );
         let snap = build(&[p], Path::new("/r"));
         let ep = &snap.projects[0].endpoints[0];
@@ -708,10 +788,7 @@ mod tests {
         let ctrl = mk_type(
             &["RoutePrefix('cat/api/catreporting')"],
             &["ApiController"],
-            vec![mk_method(
-                "GetReports",
-                &["HttpGet", "Route('getreports')"],
-            )],
+            vec![mk_method("GetReports", &["HttpGet", "Route('getreports')"])],
         );
         let p = mk_project(
             "DM.CAT.Api",
@@ -764,14 +841,85 @@ mod tests {
             .find(|p| p.name == "Acme.Billing")
             .unwrap()
             .endpoints[0];
-        assert_eq!(
-            ep.users.get("Acme.Web").unwrap(),
-            &vec!["AdminController".to_string(), "InvoicesController".to_string()]
+        let web_users: Vec<&str> = ep
+            .users
+            .get("Acme.Web")
+            .unwrap()
+            .iter()
+            .map(|u| u.type_name.as_str())
+            .collect();
+        assert_eq!(web_users, vec!["AdminController", "InvoicesController"]);
+        let worker_users: Vec<&str> = ep
+            .users
+            .get("Acme.Worker")
+            .unwrap()
+            .iter()
+            .map(|u| u.type_name.as_str())
+            .collect();
+        assert_eq!(worker_users, vec!["InvoiceProcessor"]);
+        // No invocations were threaded in, so calls stay empty for all.
+        for users in ep.users.values() {
+            for u in users {
+                assert!(u.calls.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn cross_indexes_consumer_calls_via_field() {
+        let svc = mk_type(
+            &["ServiceContract"],
+            &[],
+            vec![
+                mk_method("Submit", &["OperationContract"]),
+                mk_method("Cancel", &["OperationContract"]),
+            ],
         );
-        assert_eq!(
-            ep.users.get("Acme.Worker").unwrap(),
-            &vec!["InvoiceProcessor".to_string()]
+        let provider = mk_project(
+            "Acme.Billing",
+            vec![(TypeKind::Interface, "Acme.Billing.IInvoiceService", svc)],
         );
+
+        // Consumer holds the contract in `_svc` and calls Submit / Cancel
+        // through it, plus a non-contract method that should be filtered.
+        let mut consumer = mk_type(
+            &[],
+            &[],
+            vec![MethodMetric {
+                name: "Process".to_string(),
+                line_start: 1,
+                line_end: 6,
+                loc: 6,
+                complexity: 0,
+                file_id: None,
+                attributes: vec![],
+                signature_types: vec![],
+                invocations: vec![
+                    ("_svc".to_string(), "Submit".to_string()),
+                    ("_svc".to_string(), "Cancel".to_string()),
+                    ("_svc".to_string(), "NotOnContract".to_string()),
+                    ("other".to_string(), "Submit".to_string()),
+                ],
+            }],
+        );
+        consumer.referenced_types = vec!["IInvoiceService".to_string()];
+        consumer.service_fields = vec![("_svc".to_string(), "IInvoiceService".to_string())];
+        let web = mk_project(
+            "Acme.Web",
+            vec![(TypeKind::Class, "Acme.Web.InvoicesController", consumer)],
+        );
+
+        let snap = build(&[provider, web], Path::new("/r"));
+        let ep = &snap
+            .projects
+            .iter()
+            .find(|p| p.name == "Acme.Billing")
+            .unwrap()
+            .endpoints[0];
+        let users = ep.users.get("Acme.Web").unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].type_name, "InvoicesController");
+        assert_eq!(users[0].calls, vec!["Cancel", "Submit"]);
     }
 
     #[test]
@@ -786,4 +934,3 @@ mod tests {
         assert!(snap.projects[0].endpoints[0].users.is_empty());
     }
 }
-
