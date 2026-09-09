@@ -38,6 +38,28 @@ pub enum Finding {
         to_area: String,
         reason: String,
     },
+    /// `<bindingRedirect newVersion>` is lower than the top of its own
+    /// `oldVersion` range — always wrong, silently misroutes assembly loads.
+    BindingRedirectInverted {
+        config_path: PathBuf,
+        assembly_name: String,
+        old_version: String,
+        new_version: String,
+    },
+    /// The same assembly's `newVersion` disagrees across `.config` files
+    /// repo-wide. Surfaced for human judgement, same posture as
+    /// `VersionConflict`.
+    BindingRedirectInconsistent {
+        assembly_name: String,
+        versions: Vec<(PathBuf, String)>, // (config path, new_version)
+    },
+    /// The same assembly identity appears more than once in one `.config`
+    /// file. Severity depends on whether the duplicates agree.
+    DuplicateBindingRedirect {
+        config_path: PathBuf,
+        assembly_name: String,
+        versions: Vec<String>,
+    },
 }
 
 /// Grouped view of `Vec<Finding>` for `checks.yaml` / `atlas.findings` —
@@ -61,6 +83,12 @@ pub struct ChecksReport {
     pub undeclared_usages: BTreeMap<String, Vec<String>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub forbidden_area_edges: Vec<ForbiddenAreaEdgeEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub binding_redirect_inverted: Vec<BindingRedirectInvertedEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub binding_redirect_inconsistent: Vec<BindingRedirectInconsistentEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub duplicate_binding_redirects: Vec<DuplicateBindingRedirectEntry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,6 +110,27 @@ pub struct ForbiddenAreaEdgeEntry {
     pub to_project: String,
     pub to_area: String,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BindingRedirectInvertedEntry {
+    pub config_path: PathBuf,
+    pub assembly_name: String,
+    pub old_version: String,
+    pub new_version: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BindingRedirectInconsistentEntry {
+    pub assembly_name: String,
+    pub versions: Vec<(PathBuf, String)>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DuplicateBindingRedirectEntry {
+    pub config_path: PathBuf,
+    pub assembly_name: String,
+    pub versions: Vec<String>,
 }
 
 impl ChecksReport {
@@ -128,6 +177,39 @@ impl ChecksReport {
                     to_area: to_area.clone(),
                     reason: reason.clone(),
                 }),
+                Finding::BindingRedirectInverted {
+                    config_path,
+                    assembly_name,
+                    old_version,
+                    new_version,
+                } => out
+                    .binding_redirect_inverted
+                    .push(BindingRedirectInvertedEntry {
+                        config_path: config_path.clone(),
+                        assembly_name: assembly_name.clone(),
+                        old_version: old_version.clone(),
+                        new_version: new_version.clone(),
+                    }),
+                Finding::BindingRedirectInconsistent {
+                    assembly_name,
+                    versions,
+                } => out
+                    .binding_redirect_inconsistent
+                    .push(BindingRedirectInconsistentEntry {
+                        assembly_name: assembly_name.clone(),
+                        versions: versions.clone(),
+                    }),
+                Finding::DuplicateBindingRedirect {
+                    config_path,
+                    assembly_name,
+                    versions,
+                } => out
+                    .duplicate_binding_redirects
+                    .push(DuplicateBindingRedirectEntry {
+                        config_path: config_path.clone(),
+                        assembly_name: assembly_name.clone(),
+                        versions: versions.clone(),
+                    }),
             }
         }
         out.orphan_projects.sort();
@@ -151,6 +233,9 @@ impl ChecksReport {
             && self.unused_package_refs.is_empty()
             && self.undeclared_usages.is_empty()
             && self.forbidden_area_edges.is_empty()
+            && self.binding_redirect_inverted.is_empty()
+            && self.binding_redirect_inconsistent.is_empty()
+            && self.duplicate_binding_redirects.is_empty()
     }
 }
 
@@ -164,6 +249,18 @@ impl Finding {
             Finding::UndeclaredUsage { .. } => Severity::Warning,
             Finding::ForbiddenAreaEdge { .. } => Severity::Error,
             Finding::OrphanProject { .. } => Severity::Info,
+            Finding::BindingRedirectInverted { .. } => Severity::Error,
+            Finding::BindingRedirectInconsistent { .. } => Severity::Warning,
+            Finding::DuplicateBindingRedirect { versions, .. } => {
+                let mut distinct: Vec<&String> = versions.iter().collect();
+                distinct.sort();
+                distinct.dedup();
+                if distinct.len() > 1 {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                }
+            }
         }
     }
 }

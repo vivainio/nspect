@@ -186,6 +186,39 @@ pub fn findings_text(findings: &[Finding]) -> String {
                     "{tag} forbidden area edge: {from_project} [{from_area}] → {to_project} [{to_area}] — {reason}\n",
                 ));
             }
+            Finding::BindingRedirectInverted {
+                config_path,
+                assembly_name,
+                old_version,
+                new_version,
+            } => {
+                out.push_str(&format!(
+                    "{tag} inverted binding redirect: {} {assembly_name} oldVersion={old_version} newVersion={new_version}\n",
+                    config_path.display()
+                ));
+            }
+            Finding::BindingRedirectInconsistent {
+                assembly_name,
+                versions,
+            } => {
+                out.push_str(&format!(
+                    "{tag} inconsistent binding redirect: {assembly_name}\n"
+                ));
+                for (path, ver) in versions {
+                    out.push_str(&format!("           {}: {ver}\n", path.display()));
+                }
+            }
+            Finding::DuplicateBindingRedirect {
+                config_path,
+                assembly_name,
+                versions,
+            } => {
+                out.push_str(&format!(
+                    "{tag} duplicate binding redirect: {} {assembly_name} → [{}]\n",
+                    config_path.display(),
+                    versions.join(", ")
+                ));
+            }
         }
     }
     out

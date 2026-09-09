@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod atlas;
+pub mod binding_redirects;
 pub mod build_deps;
 pub mod build_plan;
 pub mod cache;

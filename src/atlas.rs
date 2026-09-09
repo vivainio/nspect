@@ -275,6 +275,7 @@ pub fn build(projects: Vec<Project>, scan_root: &Path, opts: AtlasOptions) -> At
             eprintln!("warning: {w}");
         }
         all.extend(crate::analysis::check_area_rules(&g, &area_of, &rules));
+        all.extend(crate::binding_redirects::analyze(&g));
         ChecksReport::from_findings(&all)
     } else {
         ChecksReport::default()
