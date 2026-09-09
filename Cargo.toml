@@ -8,6 +8,7 @@ anyhow = "1"
 bincode = "2"
 clap = { version = "4", features = ["derive"] }
 comfy-table = "7"
+dotnetdll = "0.3"
 globset = "0.4"
 ignore = "0.4"
 owo-colors = "4"

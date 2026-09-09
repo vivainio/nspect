@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
-    atlas, classes, cpm, csproj, discovery, graph::ProjectGraph, lookup, metrics, model::Project,
-    references, report, sln, source_scan,
+    atlas, classes, cpm, csproj, discovery, dotnet_dll, graph::ProjectGraph, lookup, metrics,
+    model::Project, references, report, sln, source_scan,
 };
 
 #[derive(Debug, Parser)]
@@ -49,6 +49,11 @@ pub enum Command {
     /// Same checks as `atlas --check`, but standalone and much faster since
     /// it skips everything else `--check` runs.
     CheckBindings(CheckBindingsArgs),
+    /// Parse `.dll`/`.exe` build output and dump each assembly's identity
+    /// and `AssemblyRef` dependencies — reads ECMA-335 metadata directly,
+    /// no `dotnet`/CLR/Mono involved. `<path>` is a single binary or a
+    /// directory to scan recursively (typically a `bin/` folder).
+    Dlls(DllsArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -99,6 +104,13 @@ pub struct CheckBindingsArgs {
     /// Emit compact single-line JSON (has no effect on yaml/text output).
     #[arg(long)]
     pub compact: bool,
+    /// Also scan this directory for built `.dll`/`.exe` output (recursive)
+    /// and cross-reference their `AssemblyRef` tables against the binding
+    /// redirects found, to show which real on-disk reference actually
+    /// needed each redirect. Opt-in: unlike the rest of this command, it
+    /// requires binaries to have already been built.
+    #[arg(long)]
+    pub dlls: Option<PathBuf>,
 }
 
 pub fn run_check_bindings(args: CheckBindingsArgs) -> Result<()> {
@@ -112,6 +124,64 @@ pub fn run_check_bindings(args: CheckBindingsArgs) -> Result<()> {
         }
         CheckBindingsFormat::Json => println!("{}", serde_json::to_string_pretty(&findings)?),
         CheckBindingsFormat::Yaml => print!("{}", serde_yaml::to_string(&findings)?),
+    }
+
+    if let Some(dlls_dir) = &args.dlls {
+        let entries = crate::binding_redirects::collect_entries(&g);
+        let dlls = dotnet_dll::scan(dlls_dir);
+        let (causes, unmatched) = dotnet_dll::find_redirect_causes(&entries, &dlls);
+        match args.format {
+            CheckBindingsFormat::Text => {
+                print!("{}", report::redirect_causes_text(&causes, &unmatched))
+            }
+            CheckBindingsFormat::Json if args.compact => {
+                println!("{}", serde_json::to_string(&(&causes, &unmatched))?)
+            }
+            CheckBindingsFormat::Json => {
+                println!("{}", serde_json::to_string_pretty(&(&causes, &unmatched))?)
+            }
+            CheckBindingsFormat::Yaml => {
+                print!("{}", serde_yaml::to_string(&(&causes, &unmatched))?)
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum DllsFormat {
+    Yaml,
+    Json,
+    Text,
+}
+
+#[derive(Debug, Parser)]
+pub struct DllsArgs {
+    /// A single `.dll`/`.exe` file, or a directory to scan recursively.
+    pub path: PathBuf,
+    #[arg(long, value_enum, default_value_t = DllsFormat::Yaml)]
+    pub format: DllsFormat,
+    /// Emit compact single-line JSON (has no effect on yaml/text output).
+    #[arg(long)]
+    pub compact: bool,
+    /// Include public key tokens (PKT) in the output. Omitted by default —
+    /// nearly every framework reference carries the same handful of
+    /// well-known Microsoft tokens (e.g. `b03f5f7f11d50a3a`), which is
+    /// mostly noise.
+    #[arg(long)]
+    pub pkt: bool,
+}
+
+pub fn run_dlls(args: DllsArgs) -> Result<()> {
+    let mut dlls = dotnet_dll::scan(&args.path);
+    if !args.pkt {
+        dotnet_dll::strip_tokens(&mut dlls);
+    }
+    match args.format {
+        DllsFormat::Text => print!("{}", report::dlls_text(&dlls)),
+        DllsFormat::Json if args.compact => println!("{}", serde_json::to_string(&dlls)?),
+        DllsFormat::Json => println!("{}", serde_json::to_string_pretty(&dlls)?),
+        DllsFormat::Yaml => print!("{}", serde_yaml::to_string(&dlls)?),
     }
     Ok(())
 }

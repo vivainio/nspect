@@ -130,16 +130,28 @@ fn local_name(qname: &[u8]) -> &str {
     s.rsplit(':').next().unwrap_or(s)
 }
 
+/// Split an `oldVersion` attribute into its `(lower, upper)` bounds —
+/// `"0.0.0.0-4.0.5.0"` splits on `-`; a bare `"4.0.5.0"` is its own bound
+/// on both ends. Shared with [`crate::dotnet_dll`], which checks whether an
+/// on-disk `AssemblyRef` version actually falls inside a redirect's range.
+pub(crate) fn old_version_bounds(old_version: &str) -> (&str, &str) {
+    match old_version.split_once('-') {
+        Some((lo, hi)) => (lo.trim(), hi.trim()),
+        None => (old_version.trim(), old_version.trim()),
+    }
+}
+
 /// The upper bound of an `oldVersion` range (`"0.0.0.0-4.0.5.0"` → the part
 /// after `-`; a bare `"4.0.5.0"` is its own upper bound).
 fn old_version_upper(old_version: &str) -> &str {
-    old_version.rsplit('-').next().unwrap_or(old_version)
+    old_version_bounds(old_version).1
 }
 
 /// Parse a `System.Version`-style dotted string into a 4-tuple for
 /// ordering. Missing trailing parts default to 0. Returns `None` if any
-/// present part fails to parse as an integer.
-fn parse_version(v: &str) -> Option<(u32, u32, u32, u32)> {
+/// present part fails to parse as an integer. Shared with
+/// [`crate::dotnet_dll`].
+pub(crate) fn parse_version(v: &str) -> Option<(u32, u32, u32, u32)> {
     let mut parts = [0u32; 4];
     for (i, part) in v.trim().split('.').enumerate() {
         if i >= 4 {
@@ -251,9 +263,10 @@ pub fn check_duplicates(entries: &[BindingRedirectEntry]) -> Vec<Finding> {
 }
 
 /// Discover and parse every `app.config`/`web.config`/`*.exe.config` sibling
-/// to each project in `g`, then run all binding-redirect checks over the
-/// combined entry list.
-pub fn analyze(g: &ProjectGraph) -> Vec<Finding> {
+/// to each project in `g`. Shared by [`analyze`] and by
+/// [`crate::dotnet_dll::find_redirect_causes`], which cross-references
+/// these against real on-disk `AssemblyRef`s.
+pub fn collect_entries(g: &ProjectGraph) -> Vec<BindingRedirectEntry> {
     let mut config_files: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
     for project in g.projects.values() {
         let Some(dir) = project.path.parent() else {
@@ -271,7 +284,14 @@ pub fn analyze(g: &ProjectGraph) -> Vec<Finding> {
             Err(e) => tracing::warn!("skipping {}: {e:#}", cfg.display()),
         }
     }
+    entries
+}
 
+/// Discover and parse every `app.config`/`web.config`/`*.exe.config` sibling
+/// to each project in `g`, then run all binding-redirect checks over the
+/// combined entry list.
+pub fn analyze(g: &ProjectGraph) -> Vec<Finding> {
+    let entries = collect_entries(g);
     let mut out = check_inverted(&entries);
     out.extend(check_inconsistent(&entries));
     out.extend(check_duplicates(&entries));

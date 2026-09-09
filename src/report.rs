@@ -2,6 +2,7 @@ use comfy_table::{presets::UTF8_FULL, Cell, Table};
 use owo_colors::OwoColorize;
 
 use crate::analysis::{Finding, Severity};
+use crate::dotnet_dll::{DllInfo, RedirectCause, UnmatchedRedirect};
 use crate::graph::ProjectGraph;
 use crate::model::Project;
 
@@ -116,6 +117,78 @@ pub fn graph_text(g: &ProjectGraph) -> String {
         }
     }
 
+    out
+}
+
+pub fn dlls_text(dlls: &[DllInfo]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{} {} assembly(s)\n",
+        "Found".green().bold(),
+        dlls.len()
+    ));
+    for d in dlls {
+        let name = d.assembly_name.as_deref().unwrap_or("<no manifest>");
+        let version = d
+            .version
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        out.push_str(&format!(
+            "\n{} {} {}\n",
+            "■".cyan(),
+            name.bold(),
+            version.dimmed()
+        ));
+        out.push_str(&format!("  path: {}\n", d.path.display()));
+        if let Some(tok) = &d.public_key_token {
+            out.push_str(&format!("  publicKeyToken: {tok}\n"));
+        }
+        if !d.references.is_empty() {
+            out.push_str("  references:\n");
+            for r in &d.references {
+                out.push_str(&format!("    - {r}\n"));
+            }
+        }
+    }
+    out
+}
+
+/// Cross-reference report tying `<bindingRedirect>` entries to the actual
+/// on-disk DLLs whose `AssemblyRef` version needed them — see
+/// [`crate::dotnet_dll::find_redirect_causes`].
+pub fn redirect_causes_text(causes: &[RedirectCause], unmatched: &[UnmatchedRedirect]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("\n{}\n", "Binding redirect causes:".bold()));
+    if causes.is_empty() {
+        out.push_str("  (none of the scanned DLLs reference a redirected assembly)\n");
+    }
+    for c in causes {
+        out.push_str(&format!(
+            "  {} {} {} → needed by {}\n",
+            "CAUSE  ".green(),
+            c.assembly_name,
+            c.referenced_version,
+            c.referencing_dll.display()
+        ));
+    }
+    if !unmatched.is_empty() {
+        out.push_str(&format!(
+            "\n{}\n",
+            "Redirects with no matching reference in the scanned DLLs:"
+                .yellow()
+                .bold()
+        ));
+        for u in unmatched {
+            out.push_str(&format!(
+                "  {} {} {} oldVersion={} newVersion={}\n",
+                "UNUSED ".yellow(),
+                u.config_path.display(),
+                u.assembly_name,
+                u.old_version,
+                u.new_version
+            ));
+        }
+    }
     out
 }
 

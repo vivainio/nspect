@@ -9,6 +9,7 @@ pub mod cli;
 pub mod cpm;
 pub mod csproj;
 pub mod discovery;
+pub mod dotnet_dll;
 pub mod endpoints;
 pub mod graph;
 pub mod lookup;
