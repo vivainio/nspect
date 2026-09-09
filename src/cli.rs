@@ -43,6 +43,12 @@ pub enum Command {
     /// Install the bundled Claude Code skill (SKILL.md) so agents know
     /// when and how to use `nspect lookup`.
     InstallSkills(InstallSkillsArgs),
+    /// Check `app.config`/`web.config`/`*.exe.config` `<bindingRedirect>`
+    /// entries for inverted redirects, cross-file inconsistencies, and
+    /// in-file duplicates — no NuGet restore, no tree-sitter source scan.
+    /// Same checks as `atlas --check`, but standalone and much faster since
+    /// it skips everything else `--check` runs.
+    CheckBindings(CheckBindingsArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -74,6 +80,39 @@ pub fn run_install_skills(args: InstallSkillsArgs) -> Result<()> {
     std::fs::write(&dest, NSPECT_SKILL_MD)
         .with_context(|| format!("writing {}", dest.display()))?;
     eprintln!("installed {}", dest.display());
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CheckBindingsFormat {
+    Text,
+    Json,
+    Yaml,
+}
+
+#[derive(Debug, Parser)]
+pub struct CheckBindingsArgs {
+    /// Repository root, a `.sln`, or a `.csproj` file.
+    pub path: PathBuf,
+    #[arg(long, value_enum, default_value_t = CheckBindingsFormat::Text)]
+    pub format: CheckBindingsFormat,
+    /// Emit compact single-line JSON (has no effect on yaml/text output).
+    #[arg(long)]
+    pub compact: bool,
+}
+
+pub fn run_check_bindings(args: CheckBindingsArgs) -> Result<()> {
+    let projects = load_projects(&args.path)?;
+    let g = ProjectGraph::build(projects);
+    let findings = crate::binding_redirects::analyze(&g);
+    match args.format {
+        CheckBindingsFormat::Text => print!("{}", report::findings_text(&findings)),
+        CheckBindingsFormat::Json if args.compact => {
+            println!("{}", serde_json::to_string(&findings)?)
+        }
+        CheckBindingsFormat::Json => println!("{}", serde_json::to_string_pretty(&findings)?),
+        CheckBindingsFormat::Yaml => print!("{}", serde_yaml::to_string(&findings)?),
+    }
     Ok(())
 }
 
