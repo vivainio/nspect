@@ -6,6 +6,34 @@ Not a compiler, not Roslyn. Fast, read-only, works from the filesystem — no Nu
 
 ## Install
 
+### From a release binary
+
+Linux / macOS:
+
+```bash
+curl -fsSL https://github.com/vivainio/nspect/releases/latest/download/nspect-linux-x86_64-musl -o ~/.local/bin/nspect && chmod +x ~/.local/bin/nspect
+```
+
+macOS (Apple Silicon):
+
+```bash
+curl -fsSL https://github.com/vivainio/nspect/releases/latest/download/nspect-macos-aarch64 -o ~/.local/bin/nspect && chmod +x ~/.local/bin/nspect
+```
+
+Windows (PowerShell):
+
+```powershell
+iwr https://github.com/vivainio/nspect/releases/latest/download/nspect-windows-x86_64.exe -OutFile ~/.local/bin/nspect.exe
+```
+
+### Via pip
+
+```bash
+pip install nspect
+```
+
+### From source
+
 ```bash
 git clone https://github.com/vivainio/nspect
 cd nspect

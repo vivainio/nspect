@@ -12,6 +12,23 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  get-version:
+    name: Get Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Get version from tag
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION="0.0.0-dev"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -56,7 +73,7 @@ jobs:
   build-release:
     name: Build Release (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    needs: test
+    needs: [test, get-version]
     if: github.event_name == 'release'
     strategy:
       matrix:
@@ -103,7 +120,7 @@ jobs:
     - name: Build release
       run: cargo build --release --target ${{ matrix.target }}
       env:
-        VERSION: ${{ github.ref_name }}
+        VERSION: ${{ needs.get-version.outputs.version }}
 
     - name: Package binary (Unix)
       if: matrix.os != 'windows-latest'
@@ -162,3 +179,62 @@ jobs:
         prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-wheels:
+    name: Build wheel (${{ matrix.target }})
+    needs: [test, get-version]
+    if: github.event_name == 'release'
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set version from tag
+        shell: bash
+        run: |
+          cargo install cargo-edit --locked
+          cargo set-version "${{ needs.get-version.outputs.version }}"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.target }}
+          path: dist/
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build-wheels]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # OIDC token for PyPI Trusted Publishing
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: wheels-*
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

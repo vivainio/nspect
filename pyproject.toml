@@ -1,0 +1,30 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "nspect"
+description = "Analyze the structure of C# projects and solutions: dependency graphs, package references, version conflicts, and structural metrics"
+requires-python = ">=3.10"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Ville Vainio", email = "vivainio@gmail.com" }]
+keywords = ["csharp", "dotnet", "static-analysis", "dependency-graph", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Utilities",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/vivainio/nspect"
+Repository = "https://github.com/vivainio/nspect"
+Issues = "https://github.com/vivainio/nspect/issues"
+
+[tool.maturin]
+bindings = "bin"
