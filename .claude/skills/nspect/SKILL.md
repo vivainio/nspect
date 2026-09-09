@@ -50,6 +50,11 @@ nspect metrics .
 
 # Project-to-project graph for the whole solution.
 nspect graph .
+
+# Standalone check for app.config/web.config <bindingRedirect> entries
+# (inverted / inconsistent / duplicate). No init needed, skips the
+# source scan — fast even on large repos.
+nspect check-bindings .
 ```
 
 ## How the artifacts fit together
