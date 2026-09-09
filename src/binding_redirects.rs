@@ -150,6 +150,14 @@ fn parse_version(v: &str) -> Option<(u32, u32, u32, u32)> {
     Some((parts[0], parts[1], parts[2], parts[3]))
 }
 
+/// `65535` is `ushort::MaxValue` — NuGet/Visual Studio's "Add Binding
+/// Redirect" tooling stamps `oldVersion="0.0.0.0-65535.65535.65535.65535"`
+/// as a deliberate catch-all meaning "redirect any version that could ever
+/// be requested", not a real version ceiling. Comparing `newVersion`
+/// against that sentinel is meaningless and would flag the overwhelming
+/// majority of ordinary, auto-generated redirects.
+const WILDCARD_UPPER: (u32, u32, u32, u32) = (65535, 65535, 65535, 65535);
+
 /// A redirect must point at or above the top of the range it claims to
 /// cover. When `newVersion` is lower, it silently misroutes assembly loads
 /// at runtime for versions right at the boundary — exactly why this
@@ -162,6 +170,9 @@ pub fn check_inverted(entries: &[BindingRedirectEntry]) -> Vec<Finding> {
         else {
             continue;
         };
+        if upper_v == WILDCARD_UPPER {
+            continue;
+        }
         if new_v < upper_v {
             out.push(Finding::BindingRedirectInverted {
                 config_path: e.config_path.clone(),
@@ -312,6 +323,20 @@ mod tests {
             findings[0],
             Finding::BindingRedirectInverted { .. }
         ));
+    }
+
+    #[test]
+    fn ignores_wildcard_catch_all_redirect() {
+        // The standard NuGet/VS "Add Binding Redirect" catch-all: oldVersion's
+        // upper bound is ushort::MAX in every component, not a real ceiling.
+        let entries = vec![BindingRedirectEntry {
+            config_path: PathBuf::from("app.config"),
+            assembly_name: "Microsoft.Owin".into(),
+            public_key_token: None,
+            old_version: "0.0.0.0-65535.65535.65535.65535".into(),
+            new_version: "4.2.2.0".into(),
+        }];
+        assert!(check_inverted(&entries).is_empty());
     }
 
     #[test]
