@@ -150,10 +150,7 @@ mod tests {
         assert_eq!(plan.wave_count, 4);
         assert_eq!(plan.waves[0], vec!["Foundation".to_string()]);
         assert_eq!(plan.waves[1], vec!["Common".to_string()]);
-        assert_eq!(
-            plan.waves[2],
-            vec!["Web".to_string(), "Worker".to_string()]
-        );
+        assert_eq!(plan.waves[2], vec!["Web".to_string(), "Worker".to_string()]);
         assert_eq!(plan.waves[3], vec!["Tests".to_string()]);
     }
 

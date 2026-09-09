@@ -69,10 +69,7 @@ pub fn build(atlas: &Atlas) -> TipsReport {
         std::collections::HashMap::new();
     for p in &atlas.projects {
         for r in &p.project_refs {
-            consumers
-                .entry(r.as_str())
-                .or_default()
-                .push(p.id.as_str());
+            consumers.entry(r.as_str()).or_default().push(p.id.as_str());
         }
     }
 

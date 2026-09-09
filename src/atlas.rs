@@ -269,8 +269,7 @@ pub fn build(projects: Vec<Project>, scan_root: &Path, opts: AtlasOptions) -> At
     let findings = if opts.check {
         let mut all = analyze(&g);
         let rules = crate::spec::RulesSpec::load(&root).unwrap_or_default();
-        let known_areas: std::collections::BTreeSet<String> =
-            area_of.values().cloned().collect();
+        let known_areas: std::collections::BTreeSet<String> = area_of.values().cloned().collect();
         for w in rules.validate(&known_areas) {
             eprintln!("warning: {w}");
         }
@@ -894,9 +893,7 @@ mod tests {
         std::fs::write(&csproj, b"<Project/>").unwrap();
         let (area, root) = derive_area(&csproj, &scan_root);
         assert_eq!(area, "Billing");
-        assert!(
-            root.ends_with("Src/Billing") || root.ends_with("Src\\Billing")
-        );
+        assert!(root.ends_with("Src/Billing") || root.ends_with("Src\\Billing"));
     }
 
     fn tempdir_new() -> PathBuf {

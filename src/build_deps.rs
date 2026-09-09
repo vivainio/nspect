@@ -180,7 +180,10 @@ mod tests {
             sdk_style: true,
             target_frameworks: vec![],
             package_refs: vec![],
-            project_refs: refs.iter().map(|n| PathBuf::from(format!("/r/{n}.csproj"))).collect(),
+            project_refs: refs
+                .iter()
+                .map(|n| PathBuf::from(format!("/r/{n}.csproj")))
+                .collect(),
             assembly_refs: vec![],
             usings: vec![],
             declared_namespaces: vec![],
@@ -209,8 +212,8 @@ mod tests {
             vec!["Web".to_string(), "Worker".to_string()]
         );
         assert_eq!(dom.wave, 0); // leaf
-        // Topological: leaves first → Domain (layer 0), Web/Worker (1),
-        // Tests (2).
+                                 // Topological: leaves first → Domain (layer 0), Web/Worker (1),
+                                 // Tests (2).
         assert_eq!(
             dom.rebuild_on_change,
             vec![
