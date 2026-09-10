@@ -45,7 +45,28 @@ pub fn parse(path: &Path) -> Result<Project> {
 }
 
 pub fn canonicalize(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| normalize(path))
+    std::fs::canonicalize(path)
+        .map(|p| strip_verbatim_prefix(&p))
+        .unwrap_or_else(|_| normalize(path))
+}
+
+/// On Windows, `std::fs::canonicalize` returns a `\\?\`-prefixed "verbatim"
+/// path (`\\?\UNC\` for a UNC share) so the OS skips path-length limits and
+/// `.`/`..` normalization. That's useful for I/O but unreadable in anything
+/// shown to a human — every path derived from a canonicalized project path
+/// (including config paths in report output) inherits it otherwise. Strip it
+/// back to an ordinary path; a no-op on platforms that never produce it.
+pub(crate) fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let Some(s) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    }
 }
 
 fn normalize(path: &Path) -> PathBuf {
@@ -214,6 +235,23 @@ fn handle_text(raw: &mut RawCsproj, parent: &str, name: &str, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strips_windows_verbatim_prefix() {
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\C:\repo\Src\App\Foo")),
+            PathBuf::from(r"C:\repo\Src\App\Foo")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share\Foo")),
+            PathBuf::from(r"\\server\share\Foo")
+        );
+        // Non-verbatim paths pass through unchanged.
+        assert_eq!(
+            strip_verbatim_prefix(Path::new("/home/v/r/repo/Src/App/Foo")),
+            PathBuf::from("/home/v/r/repo/Src/App/Foo")
+        );
+    }
 
     #[test]
     fn parses_sdk_style() {

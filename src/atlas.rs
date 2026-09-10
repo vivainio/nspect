@@ -90,9 +90,7 @@ pub struct UnresolvedEntry {
 }
 
 pub fn build(projects: Vec<Project>, scan_root: &Path, opts: AtlasOptions) -> Atlas {
-    let root = scan_root
-        .canonicalize()
-        .unwrap_or_else(|_| scan_root.to_path_buf());
+    let root = crate::csproj::canonicalize(scan_root);
     let g = ProjectGraph::build(projects);
     let relativize = |p: &Path| -> PathBuf {
         p.strip_prefix(&root)
@@ -274,7 +272,7 @@ pub fn build(projects: Vec<Project>, scan_root: &Path, opts: AtlasOptions) -> At
             eprintln!("warning: {w}");
         }
         all.extend(crate::analysis::check_area_rules(&g, &area_of, &rules));
-        all.extend(crate::binding_redirects::analyze(&g));
+        all.extend(crate::binding_redirects::analyze(&g, &root));
         ChecksReport::from_findings(&all)
     } else {
         ChecksReport::default()
@@ -445,12 +443,8 @@ fn ref_name(r: &AtlasRef) -> &str {
 ///
 /// Falls back to "unmapped" if the project lives outside the scan root.
 pub fn derive_area(project_path: &Path, scan_root: &Path) -> (String, PathBuf) {
-    let scan_root = scan_root
-        .canonicalize()
-        .unwrap_or_else(|_| scan_root.to_path_buf());
-    let project = project_path
-        .canonicalize()
-        .unwrap_or_else(|_| project_path.to_path_buf());
+    let scan_root = crate::csproj::canonicalize(scan_root);
+    let project = crate::csproj::canonicalize(project_path);
 
     let rel = match project.strip_prefix(&scan_root) {
         Ok(r) => r.to_path_buf(),

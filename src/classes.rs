@@ -32,9 +32,7 @@ pub struct ProjectClasses {
 }
 
 pub fn build(projects: &[Project], scan_root: &Path) -> ClassesSnapshot {
-    let root = scan_root
-        .canonicalize()
-        .unwrap_or_else(|_| scan_root.to_path_buf());
+    let root = crate::csproj::canonicalize(scan_root);
     let mut out: Vec<ProjectClasses> = projects.iter().map(|p| regroup(p, &root)).collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     ClassesSnapshot { projects: out }

@@ -120,9 +120,10 @@ pub struct CheckBindingsArgs {
 }
 
 pub fn run_check_bindings(args: CheckBindingsArgs) -> Result<()> {
+    let scan_root = csproj::canonicalize(&args.path);
     let projects = load_projects(&args.path)?;
     let g = ProjectGraph::build(projects);
-    let findings = crate::binding_redirects::analyze(&g);
+    let findings = crate::binding_redirects::analyze(&g, &scan_root);
     match args.format {
         CheckBindingsFormat::Text => print!(
             "{}",
@@ -136,7 +137,7 @@ pub fn run_check_bindings(args: CheckBindingsArgs) -> Result<()> {
     }
 
     if let Some(dlls_dir) = &args.dlls {
-        let entries = crate::binding_redirects::collect_entries(&g);
+        let entries = crate::binding_redirects::collect_entries(&g, &scan_root);
         let dlls = dotnet_dll::scan(dlls_dir);
         let (causes, unmatched) = dotnet_dll::find_redirect_causes(&entries, &dlls);
         match args.format {
@@ -206,6 +207,7 @@ pub fn run_init(args: InitArgs) -> Result<()> {
     let root = args
         .path
         .canonicalize()
+        .map(|p| csproj::strip_verbatim_prefix(&p))
         .with_context(|| format!("resolving {}", args.path.display()))?;
     let gen_dir = root.join(".nspect").join("gen");
     std::fs::create_dir_all(&gen_dir).with_context(|| format!("creating {}", gen_dir.display()))?;

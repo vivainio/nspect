@@ -60,9 +60,7 @@ struct CatalogEntry {
 }
 
 pub fn build(projects: &[Project], scan_root: &Path) -> ReferencesSnapshot {
-    let root = scan_root
-        .canonicalize()
-        .unwrap_or_else(|_| scan_root.to_path_buf());
+    let root = crate::csproj::canonicalize(scan_root);
 
     let catalog = build_catalog(projects);
 

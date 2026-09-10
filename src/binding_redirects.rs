@@ -266,7 +266,15 @@ pub fn check_duplicates(entries: &[BindingRedirectEntry]) -> Vec<Finding> {
 /// to each project in `g`. Shared by [`analyze`] and by
 /// [`crate::dotnet_dll::find_redirect_causes`], which cross-references
 /// these against real on-disk `AssemblyRef`s.
-pub fn collect_entries(g: &ProjectGraph) -> Vec<BindingRedirectEntry> {
+///
+/// Reading needs the absolute path, but nothing downstream (findings, report
+/// text, `checks.yaml`) benefits from an absolute path — repo-relative to
+/// `scan_root` is shorter, portable across machines, and (on Windows) sidesteps
+/// `std::fs::canonicalize`'s `\\?\`-prefixed "verbatim" paths entirely, since
+/// a relative path never carries one. `config_path` is relativized once here
+/// rather than at each display site.
+pub fn collect_entries(g: &ProjectGraph, scan_root: &Path) -> Vec<BindingRedirectEntry> {
+    let scan_root = crate::csproj::canonicalize(scan_root);
     let mut config_files: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
     for project in g.projects.values() {
         let Some(dir) = project.path.parent() else {
@@ -284,14 +292,23 @@ pub fn collect_entries(g: &ProjectGraph) -> Vec<BindingRedirectEntry> {
             Err(e) => tracing::warn!("skipping {}: {e:#}", cfg.display()),
         }
     }
+    for e in &mut entries {
+        e.config_path = relativize(&e.config_path, &scan_root);
+    }
     entries
+}
+
+fn relativize(path: &Path, root: &Path) -> PathBuf {
+    path.strip_prefix(root)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Discover and parse every `app.config`/`web.config`/`*.exe.config` sibling
 /// to each project in `g`, then run all binding-redirect checks over the
 /// combined entry list.
-pub fn analyze(g: &ProjectGraph) -> Vec<Finding> {
-    let entries = collect_entries(g);
+pub fn analyze(g: &ProjectGraph, scan_root: &Path) -> Vec<Finding> {
+    let entries = collect_entries(g, scan_root);
     let mut out = check_inverted(&entries);
     out.extend(check_inconsistent(&entries));
     out.extend(check_duplicates(&entries));

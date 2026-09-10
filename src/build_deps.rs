@@ -35,9 +35,7 @@ pub struct ProjectDeps {
 }
 
 pub fn build(projects: &[Project], scan_root: &Path) -> BuildDeps {
-    let root = scan_root
-        .canonicalize()
-        .unwrap_or_else(|_| scan_root.to_path_buf());
+    let root = crate::csproj::canonicalize(scan_root);
 
     let (deps, dependents) = dep_graph(projects);
     // Layer = longest forward-dep chain length. Drives the topological

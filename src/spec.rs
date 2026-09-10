@@ -64,9 +64,7 @@ impl AreasSpec {
         // (project_path, matched_entry_specificity, area_name)
         let mut best: BTreeMap<PathBuf, (usize, String)> = BTreeMap::new();
 
-        let repo_root = repo_root
-            .canonicalize()
-            .unwrap_or_else(|_| repo_root.to_path_buf());
+        let repo_root = crate::csproj::canonicalize(repo_root);
 
         for (area, entries) in &self.areas {
             for entry in entries {

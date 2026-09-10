@@ -182,9 +182,7 @@ impl Serialize for EndpointMethod {
 }
 
 pub fn build(projects: &[Project], scan_root: &Path) -> EndpointsSnapshot {
-    let root = scan_root
-        .canonicalize()
-        .unwrap_or_else(|_| scan_root.to_path_buf());
+    let root = crate::csproj::canonicalize(scan_root);
 
     // Resolve area-per-project the same way atlas does: path-based
     // `derive_area` + `spec/areas.yaml` overrides. Doing it here (rather

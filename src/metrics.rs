@@ -69,9 +69,7 @@ pub struct ProjectTotals {
 }
 
 pub fn build(projects: &[Project], scan_root: &Path) -> MetricsSnapshot {
-    let root = scan_root
-        .canonicalize()
-        .unwrap_or_else(|_| scan_root.to_path_buf());
+    let root = crate::csproj::canonicalize(scan_root);
     let mut out: Vec<ProjectMetrics> = projects.iter().map(|p| per_project(p, &root)).collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     MetricsSnapshot { projects: out }
