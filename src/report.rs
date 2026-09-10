@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use comfy_table::{presets::UTF8_FULL, Cell, Table};
 use owo_colors::OwoColorize;
 
@@ -193,6 +195,13 @@ pub fn redirect_causes_text(causes: &[RedirectCause], unmatched: &[UnmatchedRedi
 }
 
 pub fn findings_text(findings: &[Finding]) -> String {
+    findings_text_with_options(findings, false)
+}
+
+/// `full`: when true, list every config path for a
+/// `BindingRedirectInconsistent` finding instead of collapsing a version
+/// shared by many configs down to a count.
+pub fn findings_text_with_options(findings: &[Finding], full: bool) -> String {
     if findings.is_empty() {
         return format!("{} no findings\n", "✓".green().bold());
     }
@@ -277,8 +286,29 @@ pub fn findings_text(findings: &[Finding]) -> String {
                 out.push_str(&format!(
                     "{tag} inconsistent binding redirect: {assembly_name}\n"
                 ));
+                // Group by version so the common, unremarkable value collapses
+                // to one line instead of repeating every config that has it —
+                // only the minority versions (the actual disagreement) list paths.
+                let mut by_version: BTreeMap<&str, Vec<&std::path::PathBuf>> = BTreeMap::new();
                 for (path, ver) in versions {
-                    out.push_str(&format!("           {}: {ver}\n", path.display()));
+                    by_version.entry(ver.as_str()).or_default().push(path);
+                }
+                let mut groups: Vec<(&str, Vec<&std::path::PathBuf>)> =
+                    by_version.into_iter().collect();
+                groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
+                const INLINE_LIMIT: usize = 3;
+                for (ver, paths) in groups {
+                    if !full && paths.len() > INLINE_LIMIT {
+                        out.push_str(&format!(
+                            "           {ver}: {} configs (e.g. {})\n",
+                            paths.len(),
+                            paths[0].display()
+                        ));
+                    } else {
+                        for path in paths {
+                            out.push_str(&format!("           {}: {ver}\n", path.display()));
+                        }
+                    }
                 }
             }
             Finding::DuplicateBindingRedirect {

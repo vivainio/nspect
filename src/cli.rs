@@ -104,6 +104,12 @@ pub struct CheckBindingsArgs {
     /// Emit compact single-line JSON (has no effect on yaml/text output).
     #[arg(long)]
     pub compact: bool,
+    /// In text output, list every config path for an inconsistent binding
+    /// redirect instead of collapsing a version shared by many configs down
+    /// to a count. Has no effect on json/yaml output, which already lists
+    /// every path.
+    #[arg(long)]
+    pub full: bool,
     /// Also scan this directory for built `.dll`/`.exe` output (recursive)
     /// and cross-reference their `AssemblyRef` tables against the binding
     /// redirects found, to show which real on-disk reference actually
@@ -118,7 +124,10 @@ pub fn run_check_bindings(args: CheckBindingsArgs) -> Result<()> {
     let g = ProjectGraph::build(projects);
     let findings = crate::binding_redirects::analyze(&g);
     match args.format {
-        CheckBindingsFormat::Text => print!("{}", report::findings_text(&findings)),
+        CheckBindingsFormat::Text => print!(
+            "{}",
+            report::findings_text_with_options(&findings, args.full)
+        ),
         CheckBindingsFormat::Json if args.compact => {
             println!("{}", serde_json::to_string(&findings)?)
         }
