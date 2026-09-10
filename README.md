@@ -153,6 +153,61 @@ Debug aid. Shows the extracted `using`s, top-level named children of the parse t
 
 Useful for writing new heuristics against the CST.
 
+### `nspect focus <path> <project>`
+
+Visualize the dependency neighborhood of a single project: `--up <N>` hops of reverse refs (projects that depend on it) and `--down <N>` hops of forward refs (projects it depends on), each defaulting to `1`. `<project>` matches by exact name, suffix, or unique substring. `--format` accepts `dot` / `mermaid` / `json` / `text` (default).
+
+```bash
+nspect focus ./my-repo Domain --up 2 --down 1 --format text
+```
+
+### `nspect init [path]`
+
+Bootstraps `nspect` in a repo: creates `.nspect/gen/`, adds `/.nspect/gen/` and `/.nspect/cache/` to `.gitignore` (the derived artifacts — `spec/` is hand-authored and meant to be committed), seeds `.nspect/spec/areas.yaml` (and a rules stub), and populates `gen/` with a full atlas (`--check --references`, source scan included). Run this once so `nspect lookup` has something to read. `[path]` defaults to the current directory.
+
+```bash
+nspect init ./my-repo
+```
+
+### `nspect lookup <names...>`
+
+Reports everything the `.nspect/gen/` artifacts know about a type: declaring project, namespace, metrics (loc/members/complexity), and cross-project callers. Reads `atlas.yaml` / `classes.yaml` / `metrics.yaml` / `references.yaml` from `--atlas-dir`, or walks up from the current directory looking for `.nspect/gen` (as produced by `nspect init`) if omitted.
+
+```bash
+nspect lookup Customer OrderService
+nspect lookup --file Customer.cs
+```
+
+Names may be simple (`Customer`) or fully-qualified (`Acme.Domain.Customer`); multiple names combine freely with `--file` (repeatable, suffix match on the source path). `--no-sig` skips the tree-sitter re-parse that resolves method signatures (useful if the source tree has drifted); `--min` trims output to method names and line ranges only.
+
+### `nspect install-skills`
+
+Installs the bundled Claude Code skill (`SKILL.md`) so agents know when and how to use `nspect lookup`. Installs to `~/.claude/skills/nspect/` by default, or `.claude/skills/nspect/` in the current repo with `--project`.
+
+```bash
+nspect install-skills --project
+```
+
+### `nspect check-bindings <path>`
+
+Checks `app.config` / `web.config` / `*.exe.config` `<bindingRedirect>` entries for inverted redirects, cross-file inconsistencies, and in-file duplicates. Same checks as `atlas --check`, but standalone and much faster since it skips the project graph findings, package heuristics, and source scan.
+
+```bash
+nspect check-bindings ./my-repo --format yaml
+```
+
+Add `--dlls <bin-dir>` to also scan a built output directory (recursively) and cross-reference each assembly's `AssemblyRef` table against the redirects found — this shows which real on-disk reference actually needed each redirect. Opt-in, since unlike the rest of the command it requires binaries to have already been built. `--format` accepts `text` (default) / `json` / `yaml`; `--compact` emits single-line JSON.
+
+### `nspect dlls <path>`
+
+Parses `.dll`/`.exe` build output and dumps each assembly's identity and `AssemblyRef` dependencies by reading ECMA-335 metadata directly — no `dotnet`/CLR/Mono involved. `<path>` is a single binary or a directory to scan recursively (typically a `bin/` folder).
+
+```bash
+nspect dlls ./my-repo/Web.Api/bin/Debug/net48 --format yaml
+```
+
+`--format` accepts `yaml` (default) / `json` / `text`; `--compact` emits single-line JSON. Public key tokens are stripped by default (`--pkt` to keep them) since nearly every framework reference carries the same handful of well-known Microsoft tokens.
+
 ## What it handles
 
 - **SDK-style csproj** — `<PackageReference>`, `<ProjectReference>`, `TargetFramework(s)`, `AssemblyName`
