@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use comfy_table::{presets::UTF8_FULL, Cell, Table};
 use owo_colors::OwoColorize;
 
@@ -245,8 +243,10 @@ pub fn findings_text_with_options(findings: &[Finding], full: bool) -> String {
             }
             Finding::VersionConflict { package, versions } => {
                 out.push_str(&format!("{tag} version conflict: {package}\n"));
-                for (proj, ver) in versions {
-                    out.push_str(&format!("           {proj}: {ver}\n"));
+                for group in versions {
+                    for project in &group.projects {
+                        out.push_str(&format!("           {project}: {}\n", group.version));
+                    }
                 }
             }
             Finding::UnusedPackageRef { project, package } => {
@@ -286,18 +286,14 @@ pub fn findings_text_with_options(findings: &[Finding], full: bool) -> String {
                 out.push_str(&format!(
                     "{tag} inconsistent binding redirect: {assembly_name}\n"
                 ));
-                // Group by version so the common, unremarkable value collapses
-                // to one line instead of repeating every config that has it —
-                // only the minority versions (the actual disagreement) list paths.
-                let mut by_version: BTreeMap<&str, Vec<&std::path::PathBuf>> = BTreeMap::new();
-                for (path, ver) in versions {
-                    by_version.entry(ver.as_str()).or_default().push(path);
-                }
-                let mut groups: Vec<(&str, Vec<&std::path::PathBuf>)> =
-                    by_version.into_iter().collect();
-                groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
+                // `versions` is already grouped by new_version, largest group
+                // first, so the common, unremarkable value collapses to one
+                // line instead of repeating every config that has it — only
+                // the minority versions (the actual disagreement) list paths.
                 const INLINE_LIMIT: usize = 3;
-                for (ver, paths) in groups {
+                for group in versions {
+                    let ver = &group.new_version;
+                    let paths = &group.config_paths;
                     if !full && paths.len() > INLINE_LIMIT {
                         out.push_str(&format!(
                             "           {ver}: {} configs (e.g. {})\n",

@@ -21,7 +21,7 @@ pub enum Finding {
     },
     VersionConflict {
         package: String,
-        versions: Vec<(String, String)>, // (project name, version)
+        versions: Vec<PackageVersionGroup>,
     },
     UnusedPackageRef {
         project: String,
@@ -51,7 +51,7 @@ pub enum Finding {
     /// `VersionConflict`.
     BindingRedirectInconsistent {
         assembly_name: String,
-        versions: Vec<(PathBuf, String)>, // (config path, new_version)
+        versions: Vec<BindingRedirectVersionGroup>,
     },
     /// The same assembly identity appears more than once in one `.config`
     /// file. Severity depends on whether the duplicates agree.
@@ -97,10 +97,17 @@ pub struct UnresolvedRefEntry {
     pub target: PathBuf,
 }
 
+/// One distinct version of a package, and every project pinning it.
+#[derive(Debug, Clone, Serialize)]
+pub struct PackageVersionGroup {
+    pub version: String,
+    pub projects: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct VersionConflictEntry {
     pub package: String,
-    pub versions: Vec<(String, String)>,
+    pub versions: Vec<PackageVersionGroup>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,10 +127,18 @@ pub struct BindingRedirectInvertedEntry {
     pub new_version: String,
 }
 
+/// One distinct `newVersion` value seen for an assembly, and every config
+/// file that redirects to it.
+#[derive(Debug, Clone, Serialize)]
+pub struct BindingRedirectVersionGroup {
+    pub new_version: String,
+    pub config_paths: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BindingRedirectInconsistentEntry {
     pub assembly_name: String,
-    pub versions: Vec<(PathBuf, String)>,
+    pub versions: Vec<BindingRedirectVersionGroup>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -583,16 +598,21 @@ pub fn analyze(g: &ProjectGraph) -> Vec<Finding> {
         if versions.len() <= 1 {
             continue;
         }
-        let mut entries: Vec<(String, String)> = Vec::new();
-        for (ver, projects) in &versions {
-            for pid in projects {
-                entries.push((g.name(*pid).to_string(), (*ver).to_string()));
-            }
-        }
-        entries.sort();
+        let mut groups: Vec<PackageVersionGroup> = versions
+            .iter()
+            .map(|(ver, pids)| {
+                let mut projects: Vec<String> = pids.iter().map(|pid| g.name(*pid).to_string()).collect();
+                projects.sort();
+                PackageVersionGroup {
+                    version: (*ver).to_string(),
+                    projects,
+                }
+            })
+            .collect();
+        groups.sort_by(|a, b| b.projects.len().cmp(&a.projects.len()).then_with(|| a.version.cmp(&b.version)));
         out.push(Finding::VersionConflict {
             package: pkg.to_string(),
-            versions: entries,
+            versions: groups,
         });
     }
 

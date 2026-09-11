@@ -13,7 +13,7 @@ use anyhow::Result;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
-use crate::analysis::Finding;
+use crate::analysis::{BindingRedirectVersionGroup, Finding};
 use crate::graph::ProjectGraph;
 
 #[derive(Debug, Clone)]
@@ -218,15 +218,33 @@ pub fn check_inconsistent(entries: &[BindingRedirectEntry]) -> Vec<Finding> {
         if distinct.len() <= 1 {
             continue;
         }
-        let mut pairs: Vec<(PathBuf, String)> = group
-            .iter()
-            .map(|e| (e.config_path.clone(), e.new_version.clone()))
+        let mut by_version: BTreeMap<&str, Vec<PathBuf>> = BTreeMap::new();
+        for e in &group {
+            by_version
+                .entry(e.new_version.as_str())
+                .or_default()
+                .push(e.config_path.clone());
+        }
+        let mut groups: Vec<BindingRedirectVersionGroup> = by_version
+            .into_iter()
+            .map(|(ver, mut paths)| {
+                paths.sort();
+                paths.dedup();
+                BindingRedirectVersionGroup {
+                    new_version: ver.to_string(),
+                    config_paths: paths,
+                }
+            })
             .collect();
-        pairs.sort();
-        pairs.dedup();
+        groups.sort_by(|a, b| {
+            b.config_paths
+                .len()
+                .cmp(&a.config_paths.len())
+                .then_with(|| a.new_version.cmp(&b.new_version))
+        });
         out.push(Finding::BindingRedirectInconsistent {
             assembly_name: name,
-            versions: pairs,
+            versions: groups,
         });
     }
     out
