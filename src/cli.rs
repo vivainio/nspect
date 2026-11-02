@@ -54,6 +54,9 @@ pub enum Command {
     /// no `dotnet`/CLR/Mono involved. `<path>` is a single binary or a
     /// directory to scan recursively (typically a `bin/` folder).
     Dlls(DllsArgs),
+    /// Trace code paths that write to a database: tag methods calling a sink
+    /// (`SaveChanges`, `Commit`, ...) and print the call tree leading to them.
+    Writes(WritesArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -193,6 +196,63 @@ pub fn run_dlls(args: DllsArgs) -> Result<()> {
         DllsFormat::Json => println!("{}", serde_json::to_string_pretty(&dlls)?),
         DllsFormat::Yaml => print!("{}", serde_yaml::to_string(&dlls)?),
     }
+    Ok(())
+}
+
+#[derive(Debug, Parser)]
+pub struct WritesArgs {
+    /// Repository root, a `.sln`, or a `.csproj` file.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+    /// Extra sink method names (repeatable), added to the defaults.
+    #[arg(long)]
+    pub sink: Vec<String>,
+    /// Use only the `--sink` names, dropping the built-in defaults.
+    #[arg(long)]
+    pub no_default_sinks: bool,
+    /// Only show trees through methods matching `Method`, `Type`, or `Type.Method`.
+    #[arg(long)]
+    pub from: Option<String>,
+    /// Maximum tree depth.
+    #[arg(long, default_value_t = 12)]
+    pub depth: usize,
+    /// Include test code (projects named *Test*, `*Test(s)`/`*Fixture` types,
+    /// types or methods with test-framework attributes). Excluded by default.
+    #[arg(long)]
+    pub include_tests: bool,
+    /// Only show trees rooted at entry points: writer methods carrying one of
+    /// the entry attributes (on the method, or on the same-named method of a
+    /// base type/interface). Defaults: OperationContract, HttpGet/Post/Put/
+    /// Delete/Patch. Add more with `--entry-attr`.
+    #[arg(long)]
+    pub entries: bool,
+    /// Extra entry attribute name (repeatable); implies `--entries`.
+    #[arg(long)]
+    pub entry_attr: Vec<String>,
+}
+
+pub fn run_writes(args: WritesArgs) -> Result<()> {
+    let mut projects = load_projects(&args.path)?;
+    apply_source_scan_with_cache(&mut projects, Some(&args.path))?;
+    let mut sinks: std::collections::BTreeSet<String> = if args.no_default_sinks {
+        Default::default()
+    } else {
+        crate::writes::DEFAULT_SINKS.iter().map(|s| s.to_string()).collect()
+    };
+    sinks.extend(args.sink);
+    let mut entry_attrs: std::collections::BTreeSet<String> = Default::default();
+    if args.entries || !args.entry_attr.is_empty() {
+        entry_attrs.extend(crate::writes::DEFAULT_ENTRY_ATTRS.iter().map(|s| s.to_string()));
+        entry_attrs.extend(args.entry_attr);
+    }
+    let g = crate::writes::build(&projects, &sinks, args.include_tests, &entry_attrs);
+    eprintln!(
+        "writes: {} types scanned, {} sink-calling methods, {} roots",
+        projects.iter().map(|p| p.type_metrics.len()).sum::<usize>(),
+        g.sinks.len(),
+        g.roots.len()
+    );
+    print!("{}", crate::writes::render(&g, args.from.as_deref(), args.depth));
     Ok(())
 }
 

@@ -51,6 +51,10 @@ nspect metrics .
 # Project-to-project graph for the whole solution.
 nspect graph .
 
+# Which code paths write to the database? Call trees from entry points
+# (OperationContract / Http*) down to SaveChanges/Commit-style sinks.
+nspect writes . --entries
+
 # Standalone app.config/web.config <bindingRedirect> check. No init needed.
 nspect check-bindings .
 ```

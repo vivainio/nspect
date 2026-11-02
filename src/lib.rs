@@ -22,3 +22,4 @@ pub mod sln;
 pub mod source_scan;
 pub mod spec;
 pub mod tips;
+pub mod writes;

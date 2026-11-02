@@ -208,6 +208,25 @@ nspect dlls ./my-repo/Web.Api/bin/Debug/net48 --format yaml
 
 `--format` accepts `yaml` (default) / `json` / `text`; `--compact` emits single-line JSON. Public key tokens are stripped by default (`--pkt` to keep them) since nearly every framework reference carries the same handful of well-known Microsoft tokens.
 
+### `nspect writes [path]`
+
+Traces code paths that write to a database. Methods that call a *sink* (`SaveChanges`, `SaveChangesAsync`, `ExecuteNonQuery`, `ExecuteSqlRaw`, `ExecuteUpdate`/`ExecuteDelete`, `Commit`, … plus their `Async` forms) are tagged, then the tag is propagated up through the call graph and printed as a tree from each root down to the sinks.
+
+```bash
+nspect writes .                      # every writer nobody else calls, as a tree
+nspect writes . --entries            # only from entry points (OperationContract, Http*)
+nspect writes . --from OrderService  # trees through matching Method, Type or Type.Method
+```
+
+```
+OrdersController.Post
+  OrderService.Place  => _db.SaveChanges
+```
+
+Options: `--sink <name>` adds sink names (repeatable); `--no-default-sinks` uses only those; `--entries` roots the trees at methods carrying an entry attribute (on the method itself or on the same-named method of a base type/interface, so WCF's interface-level `[OperationContract]` works), with `--entry-attr <Name>` adding more attributes (implies `--entries`); `--depth <N>` caps tree depth (default 12); `--include-tests` keeps test code, which is excluded by default (projects named `*Test*`, types ending in `Test`/`Tests`/`Fixture`, and types or methods with test-framework attributes). Repeated subtrees print once and are marked `(*)`; cycles are marked `(cycle)`.
+
+It reuses the source scan's `(receiver, method)` invocation data — no type resolution. A receiver maps to a type through the enclosing type's fields/properties (or is taken as a static type name), and a call to an interface fans out to its implementers. So it is best-effort: chained receivers (`_db.Orders.Add(x)`), calls on local variables and bare `this.X()` aren't seen, overloads share a node, and interface calls over-approximate. Treat it as "what could write", not a proof. `Commit` is a loose default sink; use `--no-default-sinks --sink ...` if it's noisy.
+
 ## What it handles
 
 - **SDK-style csproj** — `<PackageReference>`, `<ProjectReference>`, `TargetFramework(s)`, `AssemblyName`

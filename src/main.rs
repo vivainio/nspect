@@ -24,5 +24,6 @@ fn main() -> Result<()> {
         Command::InstallSkills(args) => nspect::cli::run_install_skills(args),
         Command::CheckBindings(args) => nspect::cli::run_check_bindings(args),
         Command::Dlls(args) => nspect::cli::run_dlls(args),
+        Command::Writes(args) => nspect::cli::run_writes(args),
     }
 }
