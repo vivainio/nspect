@@ -54,9 +54,13 @@ pub enum Command {
     /// no `dotnet`/CLR/Mono involved. `<path>` is a single binary or a
     /// directory to scan recursively (typically a `bin/` folder).
     Dlls(DllsArgs),
-    /// Trace code paths that write to a database: tag methods calling a sink
-    /// (`SaveChanges`, `Commit`, ...) and print the call tree leading to them.
-    Writes(WritesArgs),
+    /// Trace a lens through the call graph: tag methods calling a sink
+    /// (built-in lenses: `writes`, `threads`; more in
+    /// `.nspect/spec/lenses.yaml`) and print the call trees leading to them.
+    Trace(TraceArgs),
+    /// Alias for `trace writes`: code paths that write to a database
+    /// (`SaveChanges`, `Commit`, ...).
+    Writes(TraceOpts),
 }
 
 #[derive(Debug, Parser)]
@@ -200,14 +204,23 @@ pub fn run_dlls(args: DllsArgs) -> Result<()> {
 }
 
 #[derive(Debug, Parser)]
-pub struct WritesArgs {
+pub struct TraceArgs {
+    /// Lens name: a built-in (`writes`, `threads`) or one defined in
+    /// `.nspect/spec/lenses.yaml`.
+    pub lens: String,
+    #[command(flatten)]
+    pub opts: TraceOpts,
+}
+
+#[derive(Debug, Parser)]
+pub struct TraceOpts {
     /// Repository root, a `.sln`, or a `.csproj` file.
     #[arg(default_value = ".")]
     pub path: PathBuf,
-    /// Extra sink method names (repeatable), added to the defaults.
+    /// Extra sink pattern (repeatable): `Method` or `Receiver.Method`.
     #[arg(long)]
     pub sink: Vec<String>,
-    /// Use only the `--sink` names, dropping the built-in defaults.
+    /// Use only the `--sink` patterns, dropping the lens's own.
     #[arg(long)]
     pub no_default_sinks: bool,
     /// Only show trees through methods matching `Method`, `Type`, or `Type.Method`.
@@ -220,10 +233,10 @@ pub struct WritesArgs {
     /// types or methods with test-framework attributes). Excluded by default.
     #[arg(long)]
     pub include_tests: bool,
-    /// Only show trees rooted at entry points: writer methods carrying one of
+    /// Only show trees rooted at entry points: tagged methods carrying one of
     /// the entry attributes (on the method, or on the same-named method of a
     /// base type/interface). Defaults: OperationContract, HttpGet/Post/Put/
-    /// Delete/Patch. Add more with `--entry-attr`.
+    /// Delete/Patch (a lens may override). Add more with `--entry-attr`.
     #[arg(long)]
     pub entries: bool,
     /// Extra entry attribute name (repeatable); implies `--entries`.
@@ -231,28 +244,43 @@ pub struct WritesArgs {
     pub entry_attr: Vec<String>,
 }
 
-pub fn run_writes(args: WritesArgs) -> Result<()> {
+pub fn run_writes(opts: TraceOpts) -> Result<()> {
+    run_trace_lens("writes", opts)
+}
+
+pub fn run_trace(args: TraceArgs) -> Result<()> {
+    run_trace_lens(&args.lens, args.opts)
+}
+
+fn run_trace_lens(lens_name: &str, args: TraceOpts) -> Result<()> {
+    let scan_root = if args.path.is_dir() {
+        args.path.clone()
+    } else {
+        args.path.parent().map(|p| p.to_path_buf()).unwrap_or_default()
+    };
+    let lens = crate::trace::resolve_lens(lens_name, &scan_root)?;
     let mut projects = load_projects(&args.path)?;
     apply_source_scan_with_cache(&mut projects, Some(&args.path))?;
-    let mut sinks: std::collections::BTreeSet<String> = if args.no_default_sinks {
-        Default::default()
-    } else {
-        crate::writes::DEFAULT_SINKS.iter().map(|s| s.to_string()).collect()
-    };
-    sinks.extend(args.sink);
+    let mut sinks = if args.no_default_sinks { Vec::new() } else { lens.sinks.clone() };
+    sinks.extend(args.sink.iter().map(|s| crate::trace::SinkPattern::parse(s)));
     let mut entry_attrs: std::collections::BTreeSet<String> = Default::default();
     if args.entries || !args.entry_attr.is_empty() {
-        entry_attrs.extend(crate::writes::DEFAULT_ENTRY_ATTRS.iter().map(|s| s.to_string()));
+        if lens.entry_attrs.is_empty() {
+            entry_attrs.extend(crate::trace::DEFAULT_ENTRY_ATTRS.iter().map(|s| s.to_string()));
+        } else {
+            entry_attrs.extend(lens.entry_attrs.iter().cloned());
+        }
         entry_attrs.extend(args.entry_attr);
     }
-    let g = crate::writes::build(&projects, &sinks, args.include_tests, &entry_attrs);
+    let g = crate::trace::build_with(&projects, &sinks, args.include_tests, &entry_attrs);
     eprintln!(
-        "writes: {} types scanned, {} sink-calling methods, {} roots",
+        "{}: {} types scanned, {} sink-calling methods, {} roots",
+        lens.name,
         projects.iter().map(|p| p.type_metrics.len()).sum::<usize>(),
         g.sinks.len(),
         g.roots.len()
     );
-    print!("{}", crate::writes::render(&g, args.from.as_deref(), args.depth));
+    print!("{}", crate::trace::render(&g, args.from.as_deref(), args.depth));
     Ok(())
 }
 

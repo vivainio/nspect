@@ -1,5 +1,8 @@
-//! Write-path tracing: tag methods that call a "write sink" (`SaveChanges`,
-//! `Commit`, ...) and propagate upward through the call graph.
+//! Lens-based call tracing: tag methods that call a *sink* (a `(receiver,
+//! method)` pattern such as `SaveChanges` or `Task.WhenAll`) and propagate the
+//! tag upward through the call graph. A *lens* is a named sink set; `writes`
+//! and `threads` are built in, more can be declared in
+//! `.nspect/spec/lenses.yaml`.
 //!
 //! Uses only data the source scan already collects:
 //! * `MethodMetric::invocations` — `(receiver, method)` pairs,
@@ -12,10 +15,15 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+
 use crate::model::{Project, TypeMetrics};
 
-/// Method names treated as write sinks unless overridden.
-pub const DEFAULT_SINKS: &[&str] = &[
+/// `writes` lens: method names that persist to a database.
+pub const WRITE_SINKS: &[&str] = &[
     "SaveChanges",
     "SaveChangesAsync",
     "ExecuteNonQuery",
@@ -32,11 +40,136 @@ pub const DEFAULT_SINKS: &[&str] = &[
     "CommitAsync",
 ];
 
+/// `threads` lens: concurrency primitives. `Recv.Method` entries match a call
+/// on that receiver (a static type name like `Task`, or a field whose declared
+/// type is that name); a bare name matches the method on any receiver.
+pub const THREAD_SINKS: &[&str] = &[
+    "Task.WhenAll",
+    "Task.WhenAny",
+    "Task.WaitAll",
+    "Task.WaitAny",
+    "Task.Run",
+    "Parallel.For",
+    "Parallel.ForEach",
+    "Parallel.ForEachAsync",
+    "Parallel.Invoke",
+    "ThreadPool.QueueUserWorkItem",
+    "AsParallel",
+];
+
+/// One sink pattern: `Method` (any receiver) or `Recv.Method`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SinkPattern {
+    pub recv: Option<String>,
+    pub method: String,
+}
+
+impl SinkPattern {
+    pub fn parse(s: &str) -> Self {
+        match s.rsplit_once('.') {
+            Some((r, m)) if !r.is_empty() && !m.is_empty() => SinkPattern {
+                recv: Some(r.to_string()),
+                method: m.to_string(),
+            },
+            _ => SinkPattern {
+                recv: None,
+                method: s.to_string(),
+            },
+        }
+    }
+
+    /// `field_ty` is the declared type of `recv` when it names a field.
+    fn matches(&self, recv: &str, field_ty: Option<&str>, name: &str) -> bool {
+        self.method == name
+            && match &self.recv {
+                None => true,
+                Some(r) => r == recv || Some(r.as_str()) == field_ty,
+            }
+    }
+}
+
+/// A named question asked of the call graph.
+#[derive(Debug, Clone)]
+pub struct Lens {
+    pub name: String,
+    pub sinks: Vec<SinkPattern>,
+    /// Entry attributes for `--entries`; empty means `DEFAULT_ENTRY_ATTRS`.
+    pub entry_attrs: Vec<String>,
+}
+
+impl Lens {
+    fn from_names(name: &str, sinks: &[&str]) -> Self {
+        Lens {
+            name: name.to_string(),
+            sinks: sinks.iter().map(|s| SinkPattern::parse(s)).collect(),
+            entry_attrs: Vec::new(),
+        }
+    }
+}
+
+pub fn builtin_lenses() -> Vec<Lens> {
+    vec![
+        Lens::from_names("writes", WRITE_SINKS),
+        Lens::from_names("threads", THREAD_SINKS),
+    ]
+}
+
+#[derive(Debug, Deserialize)]
+struct LensFile {
+    #[serde(default)]
+    lenses: BTreeMap<String, LensDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LensDef {
+    #[serde(default)]
+    sinks: Vec<String>,
+    #[serde(default)]
+    entry_attrs: Vec<String>,
+}
+
+/// Parse a `lenses.yaml` document.
+pub fn parse_lens_file(text: &str) -> Result<Vec<Lens>> {
+    let f: LensFile = serde_yaml::from_str(text)?;
+    Ok(f.lenses
+        .into_iter()
+        .map(|(name, d)| Lens {
+            name,
+            sinks: d.sinks.iter().map(|s| SinkPattern::parse(s)).collect(),
+            entry_attrs: d.entry_attrs,
+        })
+        .collect())
+}
+
+/// Find a lens by name: `<root>/.nspect/spec/lenses.yaml` first (so a repo can
+/// override a built-in), then the built-ins.
+pub fn resolve_lens(name: &str, root: &Path) -> Result<Lens> {
+    let spec = root.join(".nspect").join("spec").join("lenses.yaml");
+    let mut available: Vec<String> = Vec::new();
+    if spec.is_file() {
+        let text = std::fs::read_to_string(&spec)
+            .with_context(|| format!("reading {}", spec.display()))?;
+        for l in parse_lens_file(&text).with_context(|| format!("parsing {}", spec.display()))? {
+            if l.name == name {
+                return Ok(l);
+            }
+            available.push(l.name);
+        }
+    }
+    for l in builtin_lenses() {
+        if l.name == name {
+            return Ok(l);
+        }
+        available.push(l.name);
+    }
+    anyhow::bail!("unknown lens `{name}`; available: {}", available.join(", "))
+}
+
 /// A method node: `(type fqn, method name)`. Overloads share a node.
 pub type Node = (String, String);
 
 #[derive(Debug, Default)]
-pub struct WriteGraph {
+pub struct TraceGraph {
     /// Direct sink calls per method: `"_db.SaveChanges"`.
     pub sinks: BTreeMap<Node, BTreeSet<String>>,
     /// Resolved call edges, restricted to methods that (transitively) write.
@@ -94,12 +227,12 @@ pub const DEFAULT_ENTRY_ATTRS: &[&str] = &[
     "HttpPatch",
 ];
 
-pub fn build(
+pub fn build_with(
     projects: &[Project],
-    sinks: &BTreeSet<String>,
+    sinks: &[SinkPattern],
     include_tests: bool,
     entry_attrs: &BTreeSet<String>,
-) -> WriteGraph {
+) -> TraceGraph {
     let maps: Vec<&BTreeMap<String, TypeMetrics>> = projects
         .iter()
         .filter(|p| include_tests || !is_test_project(&p.name))
@@ -110,10 +243,10 @@ pub fn build(
 
 pub fn build_from_types(
     maps: &[&BTreeMap<String, TypeMetrics>],
-    sinks: &BTreeSet<String>,
+    sinks: &[SinkPattern],
     include_tests: bool,
     entry_attrs: &BTreeSet<String>,
-) -> WriteGraph {
+) -> TraceGraph {
     let keep = |fqn: &str, m: &TypeMetrics| include_tests || !is_test_type(fqn, m);
     // simple type name -> fqns (across all projects)
     let mut by_simple: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -178,7 +311,8 @@ pub fn build_from_types(
         for meth in &m.methods {
             let node: Node = (fqn.to_string(), meth.name.clone());
             for (recv, name) in &meth.invocations {
-                if sinks.contains(name) {
+                let field_ty = fields.get(recv.as_str()).copied();
+                if sinks.iter().any(|p| p.matches(recv, field_ty, name)) {
                     direct
                         .entry(node.clone())
                         .or_default()
@@ -280,7 +414,7 @@ pub fn build_from_types(
             .filter(|(t, m)| has_entry_attr(t, m))
             .cloned()
             .collect();
-        return WriteGraph {
+        return TraceGraph {
             sinks: direct,
             edges,
             roots,
@@ -300,7 +434,7 @@ pub fn build_from_types(
         }
     }
 
-    WriteGraph {
+    TraceGraph {
         sinks: direct,
         edges,
         roots,
@@ -321,7 +455,7 @@ fn reachable(edges: &BTreeMap<Node, BTreeSet<Node>>, from: &[Node]) -> BTreeSet<
 }
 
 /// Render the write tree from each root (or from `from`-matching nodes).
-pub fn render(g: &WriteGraph, from: Option<&str>, max_depth: usize) -> String {
+pub fn render(g: &TraceGraph, from: Option<&str>, max_depth: usize) -> String {
     let roots: Vec<Node> = match from {
         None => g.roots.clone(),
         Some(q) => {
@@ -350,7 +484,7 @@ fn matches(n: &Node, q: &str) -> bool {
 }
 
 fn walk(
-    g: &WriteGraph,
+    g: &TraceGraph,
     n: &Node,
     depth: usize,
     max_depth: usize,
@@ -406,6 +540,10 @@ mod tests {
         types.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
     }
 
+    fn write_sinks() -> Vec<SinkPattern> {
+        WRITE_SINKS.iter().map(|s| SinkPattern::parse(s)).collect()
+    }
+
     #[test]
     fn propagates_through_interface_to_impl() {
         let ctl = TypeMetrics {
@@ -433,7 +571,7 @@ mod tests {
             ("A.OrderService", imp),
             ("A.Reader", unrelated),
         ]);
-        let sinks: BTreeSet<String> = DEFAULT_SINKS.iter().map(|s| s.to_string()).collect();
+        let sinks = write_sinks();
         let g = build_from_types(&[&p], &sinks, false, &BTreeSet::new());
         assert_eq!(
             g.roots,
@@ -456,7 +594,7 @@ mod tests {
             ..Default::default()
         };
         let p = project(vec![("A", a), ("B", b)]);
-        let sinks: BTreeSet<String> = DEFAULT_SINKS.iter().map(|s| s.to_string()).collect();
+        let sinks = write_sinks();
         let g = build_from_types(&[&p], &sinks, false, &BTreeSet::new());
         assert!(!g.roots.is_empty());
         let _ = render(&g, None, 10);
@@ -478,7 +616,7 @@ mod tests {
             ..Default::default()
         };
         let p = project(vec![("A.ChatServiceTest", t), ("A.Misc", attr_only)]);
-        let sinks: BTreeSet<String> = DEFAULT_SINKS.iter().map(|s| s.to_string()).collect();
+        let sinks = write_sinks();
         assert!(build_from_types(&[&p], &sinks, false, &BTreeSet::new())
             .roots
             .is_empty());
@@ -509,9 +647,58 @@ mod tests {
             ..Default::default()
         };
         let p = project(vec![("A.ISvc", iface), ("A.Svc", imp)]);
-        let sinks: BTreeSet<String> = DEFAULT_SINKS.iter().map(|s| s.to_string()).collect();
+        let sinks = write_sinks();
         let entries: BTreeSet<String> = ["OperationContract".to_string()].into();
         let g = build_from_types(&[&p], &sinks, false, &entries);
         assert_eq!(g.roots, vec![("A.Svc".to_string(), "Save".to_string())]);
+    }
+
+    #[test]
+    fn threads_lens_matches_receiver_and_method() {
+        let a = TypeMetrics {
+            methods: vec![
+                method("Fan", &[("Task", "WhenAll")]),
+                method("Other", &[("_x", "Run")]),
+                method("ViaField", &[("_p", "Run")]),
+            ],
+            service_fields: vec![("_p".into(), "Task".into())],
+            ..Default::default()
+        };
+        let p = project(vec![("A.Svc", a)]);
+        let lens = Lens::from_names("threads", THREAD_SINKS);
+        let g = build_from_types(&[&p], &lens.sinks, false, &BTreeSet::new());
+        let names: Vec<&str> = g.roots.iter().map(|n| n.1.as_str()).collect();
+        assert_eq!(names, vec!["Fan", "ViaField"]);
+    }
+
+    #[test]
+    fn user_lens_file_parses_and_patterns_split() {
+        let l = parse_lens_file(
+            "lenses:\n  http:\n    sinks: [HttpClient.GetAsync, SendAsync]\n    entry_attrs: [Route]\n",
+        )
+        .unwrap();
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0].name, "http");
+        assert_eq!(
+            l[0].sinks,
+            vec![
+                SinkPattern {
+                    recv: Some("HttpClient".into()),
+                    method: "GetAsync".into()
+                },
+                SinkPattern {
+                    recv: None,
+                    method: "SendAsync".into()
+                },
+            ]
+        );
+        assert_eq!(l[0].entry_attrs, vec!["Route".to_string()]);
+        assert!(resolve_lens("nope", Path::new("/nonexistent")).is_err());
+        assert_eq!(
+            resolve_lens("threads", Path::new("/nonexistent"))
+                .unwrap()
+                .name,
+            "threads"
+        );
     }
 }

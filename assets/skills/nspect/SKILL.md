@@ -53,7 +53,10 @@ nspect graph .
 
 # Which code paths write to the database? Call trees from entry points
 # (OperationContract / Http*) down to SaveChanges/Commit-style sinks.
-nspect writes . --entries
+# Other lens: `threads` (Task.WhenAll, Parallel.*, ...). Custom lenses live in
+# .nspect/spec/lenses.yaml.
+nspect trace writes . --entries
+nspect trace threads . --entries
 
 # Standalone app.config/web.config <bindingRedirect> check. No init needed.
 nspect check-bindings .
