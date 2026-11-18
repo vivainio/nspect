@@ -23,3 +23,4 @@ pub mod source_scan;
 pub mod spec;
 pub mod tips;
 pub mod trace;
+pub mod usages;

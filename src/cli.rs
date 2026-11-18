@@ -54,6 +54,8 @@ pub enum Command {
     /// no `dotnet`/CLR/Mono involved. `<path>` is a single binary or a
     /// directory to scan recursively (typically a `bin/` folder).
     Dlls(DllsArgs),
+    /// Find direct method calls on receivers typed by a library.
+    Usages(crate::usages::UsagesArgs),
     /// Trace a lens through the call graph: tag methods calling a sink
     /// (built-in lenses: `writes`, `threads`; more in
     /// `.nspect/spec/lenses.yaml`) and print the call trees leading to them.

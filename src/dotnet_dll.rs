@@ -127,13 +127,40 @@ pub fn parse(path: &Path) -> Result<DllInfo> {
     parse_bytes(&bytes, path)
 }
 
-fn parse_bytes(bytes: &[u8], path: &Path) -> Result<DllInfo> {
+pub fn defined_types(path: &Path) -> Result<Vec<String>> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let resolution = read_resolution(&bytes, path)?;
+    Ok(resolution
+        .enumerate_type_definitions()
+        .filter(|(_, ty)| ty.name != "<Module>")
+        .map(|(_, ty)| source_type_name(ty, &resolution))
+        .collect())
+}
+
+fn source_type_name(
+    ty: &dotnetdll::prelude::TypeDefinition<'_>,
+    resolution: &Resolution<'_>,
+) -> String {
+    match ty.encloser {
+        Some(parent) => format!(
+            "{}.{}",
+            source_type_name(&resolution[parent], resolution),
+            ty.name
+        ),
+        None => ty.type_name(),
+    }
+}
+
+fn read_resolution<'a>(bytes: &'a [u8], path: &Path) -> Result<Resolution<'a>> {
     let opts = ReadOptions {
         skip_method_bodies: true,
         ..ReadOptions::default()
     };
-    let res = Resolution::parse(bytes, opts)
-        .map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))?;
+    Resolution::parse(bytes, opts).map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))
+}
+
+fn parse_bytes(bytes: &[u8], path: &Path) -> Result<DllInfo> {
+    let res = read_resolution(bytes, path)?;
 
     let (assembly_name, version, public_key_token) = match &res.assembly {
         Some(a) => (

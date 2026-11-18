@@ -25,6 +25,7 @@ fn main() -> Result<()> {
         Command::CheckBindings(args) => nspect::cli::run_check_bindings(args),
         Command::Dlls(args) => nspect::cli::run_dlls(args),
         Command::Trace(args) => nspect::cli::run_trace(args),
+        Command::Usages(args) => nspect::usages::run(args),
         Command::Writes(args) => nspect::cli::run_writes(args),
     }
 }

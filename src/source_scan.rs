@@ -86,46 +86,7 @@ pub fn scan_projects_cached(
         let mut metrics: BTreeMap<String, TypeMetrics> = BTreeMap::new();
         let mut references: BTreeSet<String> = BTreeSet::new();
 
-        let walker = WalkBuilder::new(project_dir)
-            .follow_links(false)
-            .git_ignore(true)
-            .hidden(false)
-            .build();
-
-        // Collect .cs paths first, then sort — ensures deterministic file_id
-        // assignment across runs without retroactively breaking the mapping.
-        let mut cs_paths: Vec<PathBuf> = Vec::new();
-        for entry in walker.flatten() {
-            let path = entry.path();
-            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                continue;
-            }
-            if path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| !e.eq_ignore_ascii_case("cs"))
-                .unwrap_or(true)
-            {
-                continue;
-            }
-            if nested.iter().any(|n| path.starts_with(n)) {
-                continue;
-            }
-            if is_build_output(path) {
-                continue;
-            }
-            cs_paths.push(path.to_path_buf());
-        }
-        // Sort by (parent_dir, basename) so file_ids assigned below match
-        // the order produced when metrics.yaml groups source_files by parent
-        // directory. A plain full-path sort would place `Foo/Bar/x.cs`
-        // *between* `Foo/a.cs` and `Foo/c.cs`, which breaks alignment with
-        // the grouped view.
-        cs_paths.sort_by(|a, b| {
-            let pa = a.parent().unwrap_or_else(|| Path::new(""));
-            let pb = b.parent().unwrap_or_else(|| Path::new(""));
-            pa.cmp(pb).then_with(|| a.file_name().cmp(&b.file_name()))
-        });
+        let cs_paths = project_source_paths(project_dir, &nested);
 
         for path in &cs_paths {
             // Reserve the file_id *before* parsing so spans stamped during
@@ -296,6 +257,51 @@ fn stamp_file_id(decls: &mut FileDecls, file_id: u32) {
 }
 
 /// Back-compat: extract only `using` targets. Used by the CLI's ast-dump.
+pub(crate) fn project_source_paths(project_dir: &Path, nested: &[&Path]) -> Vec<PathBuf> {
+    let walker = WalkBuilder::new(project_dir)
+        .follow_links(false)
+        .git_ignore(true)
+        .hidden(false)
+        .build();
+
+    // Collect .cs paths first, then sort — ensures deterministic file_id
+    // assignment across runs without retroactively breaking the mapping.
+    let mut cs_paths: Vec<PathBuf> = Vec::new();
+    for entry in walker.flatten() {
+        let path = entry.path();
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| !e.eq_ignore_ascii_case("cs"))
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        if nested.iter().any(|n| path.starts_with(n)) {
+            continue;
+        }
+        if is_build_output(path) {
+            continue;
+        }
+        cs_paths.push(path.to_path_buf());
+    }
+    // Sort by (parent_dir, basename) so file_ids assigned below match
+    // the order produced when metrics.yaml groups source_files by parent
+    // directory. A plain full-path sort would place `Foo/Bar/x.cs`
+    // *between* `Foo/a.cs` and `Foo/c.cs`, which breaks alignment with
+    // the grouped view.
+    cs_paths.sort_by(|a, b| {
+        let pa = a.parent().unwrap_or_else(|| Path::new(""));
+        let pb = b.parent().unwrap_or_else(|| Path::new(""));
+        pa.cmp(pb).then_with(|| a.file_name().cmp(&b.file_name()))
+    });
+
+    cs_paths
+}
+
 pub fn extract_usings(src: &str) -> Result<Vec<String>> {
     Ok(extract_decls(src)?.usings)
 }
